@@ -18,7 +18,9 @@ npm run z-agent -- "hello"
 OPENAI_API_KEY=sk-... npx z-agent --live "echo hi"
 ```
 
-Bin entry: `z-agent` → `packages/cli/bin/z-agent.mjs` (Node ≥22, strip-types for source exports).
+Bin entry: `z-agent` → `packages/cli/bin/z-agent.mjs`.
+
+**Node ≥22.6.0** required (`--experimental-strip-types` for monorepo source `.ts` exports). Smoke bin only — no library `exports` surface.
 
 ## Behavior
 

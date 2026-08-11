@@ -7,13 +7,6 @@
 	"bin": {
 		"z-agent": "./bin/z-agent.mjs"
 	},
-	"exports": {
-		".": {
-			"types": "./src/cli.ts",
-			"import": "./src/cli.ts"
-		},
-		"./package.json": "./package.json"
-	},
 	"files": [
 		"bin",
 		"src",
@@ -24,7 +17,7 @@
 		"test": "vitest --run"
 	},
 	"engines": {
-		"node": ">=22.0.0"
+		"node": ">=22.6.0"
 	},
 	"license": "MIT",
 	"dependencies": {

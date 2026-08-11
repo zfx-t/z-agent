@@ -90,9 +90,15 @@ function printEvent(event: AgentEvent): void {
 	}
 }
 
-function parseArgs(argv: string[]): { prompt: string; live: boolean; help: boolean } {
+function parseArgs(argv: string[]): {
+	prompt: string;
+	live: boolean;
+	help: boolean;
+	error?: string;
+} {
 	let live = false;
 	let help = false;
+	let error: string | undefined;
 	const rest: string[] = [];
 	for (const arg of argv) {
 		if (arg === "--live") {
@@ -100,8 +106,7 @@ function parseArgs(argv: string[]): { prompt: string; live: boolean; help: boole
 		} else if (arg === "--help" || arg === "-h") {
 			help = true;
 		} else if (arg.startsWith("-")) {
-			console.error(`Unknown flag: ${arg}`);
-			help = true;
+			error = `Unknown flag: ${arg}`;
 		} else {
 			rest.push(arg);
 		}
@@ -110,6 +115,7 @@ function parseArgs(argv: string[]): { prompt: string; live: boolean; help: boole
 		prompt: rest.length > 0 ? rest.join(" ") : DEFAULT_PROMPT,
 		live,
 		help,
+		error,
 	};
 }
 
@@ -148,7 +154,12 @@ function createLiveSetup(apiKey: string): { streamFn: StreamFn; model: Model; ap
 }
 
 async function main(): Promise<void> {
-	const { prompt, live, help } = parseArgs(process.argv.slice(2));
+	const { prompt, live, help, error } = parseArgs(process.argv.slice(2));
+	if (error) {
+		console.error(error);
+		printHelp();
+		process.exit(2);
+	}
 	if (help) {
 		printHelp();
 		process.exit(0);
