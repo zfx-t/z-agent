@@ -9,6 +9,7 @@ import type {
 	CustomAgentMessages,
 	QueueMode,
 	ToolExecutionMode,
+	ToolResultMessage,
 } from "../src/index.ts";
 import { AGENT_PACKAGE } from "../src/index.ts";
 
@@ -84,6 +85,57 @@ describe("agent type surface", () => {
 		const out = await tool.execute("id", { n: 21 });
 		expect(out.details.doubled).toBe(42);
 		expect(tool.parameters.parse({ n: 1 })).toEqual({ n: 1 });
+	});
+
+	it("default AgentTool execute params are unknown (not any)", () => {
+		type DefaultParams = Parameters<AgentTool["execute"]>[1];
+		expectTypeOf<DefaultParams>().toEqualTypeOf<unknown>();
+		// IsAny guard: any would match both branches of this conditional
+		type IsAny<T> = 0 extends 1 & T ? true : false;
+		expectTypeOf<IsAny<DefaultParams>>().toEqualTypeOf<false>();
+	});
+
+	it("tool_execution events carry AgentToolResult payloads", () => {
+		const result: AgentToolResult = {
+			content: [{ type: "text", text: "ok" }],
+			details: undefined,
+		};
+		const update: AgentEvent = {
+			type: "tool_execution_update",
+			toolCallId: "c1",
+			toolName: "t",
+			args: {},
+			partialResult: result,
+		};
+		const end: AgentEvent = {
+			type: "tool_execution_end",
+			toolCallId: "c1",
+			toolName: "t",
+			result,
+			isError: false,
+		};
+		expect(update.type).toBe("tool_execution_update");
+		expect(end.type).toBe("tool_execution_end");
+	});
+
+	it("ToolResultMessage accepts optional usage (dual-layer seam)", () => {
+		const msg: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "c1",
+			toolName: "echo",
+			content: [{ type: "text", text: "x" }],
+			isError: false,
+			timestamp: 0,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+		expect(msg.usage?.totalTokens).toBe(0);
 	});
 
 	it("AgentContext holds AgentMessage transcript and tools", () => {

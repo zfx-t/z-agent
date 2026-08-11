@@ -23,8 +23,10 @@ export async function emitAgentEvent(sink: AgentEventSink, event: AgentEvent): P
  * Empty list is a no-op sink.
  */
 export function composeAgentEventSinks(sinks: readonly AgentEventSink[]): AgentEventSink {
+	// Snapshot so mid-fan-out mutation of the caller's array cannot change which sinks run.
+	const snapshot = sinks.slice();
 	return async (event) => {
-		for (const sink of sinks) {
+		for (const sink of snapshot) {
 			await sink(event);
 		}
 	};

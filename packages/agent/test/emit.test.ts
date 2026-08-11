@@ -94,4 +94,21 @@ describe("composeAgentEventSinks", () => {
 		expect(c1.events[0]).toEqual(event);
 		expect(c2.events[0]).toEqual(event);
 	});
+
+	it("snapshots sinks so mid-fan-out array mutation is ignored", async () => {
+		const order: string[] = [];
+		const sinks: AgentEventSink[] = [];
+		sinks.push(async () => {
+			order.push("a");
+			sinks.push(async () => {
+				order.push("late");
+			});
+		});
+		sinks.push(() => {
+			order.push("b");
+		});
+		const composed = composeAgentEventSinks(sinks);
+		await emitAgentEvent(composed, { type: "agent_start" });
+		expect(order).toEqual(["a", "b"]);
+	});
 });

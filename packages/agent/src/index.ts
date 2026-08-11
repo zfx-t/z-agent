@@ -24,6 +24,7 @@ export type {
 	AgentMessage,
 	AgentTool,
 	AgentToolCall,
+	AgentToolParametersSchema,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	AssistantMessage,

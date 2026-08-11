@@ -102,12 +102,21 @@ export interface AgentToolResult<TDetails = unknown> {
 export type AgentToolUpdateCallback<TDetails = unknown> = (partialResult: AgentToolResult<TDetails>) => void;
 
 /**
+ * Default zod schema bound for unparameterized {@link AgentTool}.
+ * Preserves `unknown` for input/output (avoids `z.ZodType` defaulting to `any`).
+ */
+export type AgentToolParametersSchema = z.ZodType<unknown, z.ZodTypeDef, unknown>;
+
+/**
  * Tool definition for the agent runtime.
  *
  * `parameters` is a **zod** schema (ADR-0013). Conversion to JSON-Schema-shaped
  * {@link import("@z-agent/ai").Tool} at the LLM boundary is done by the loop later.
  */
-export interface AgentTool<TParameters extends z.ZodType = z.ZodType, TDetails = unknown> {
+export interface AgentTool<
+	TParameters extends AgentToolParametersSchema = AgentToolParametersSchema,
+	TDetails = unknown,
+> {
 	name: string;
 	description: string;
 	/** Zod schema for tool arguments. */
@@ -216,13 +225,13 @@ export type AgentEvent =
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
-			partialResult: unknown;
+			partialResult: AgentToolResult;
 	  }
 	| {
 			type: "tool_execution_end";
 			toolCallId: string;
 			toolName: string;
-			result: unknown;
+			result: AgentToolResult;
 			isError: boolean;
 	  };
 

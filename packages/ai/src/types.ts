@@ -120,6 +120,8 @@ export interface ToolResultMessage {
 	toolName: string;
 	content: ToolResultContent[];
 	details?: unknown;
+	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
+	usage?: Usage;
 	isError: boolean;
 	timestamp: number;
 }
