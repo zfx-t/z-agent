@@ -95,6 +95,38 @@ describe("agent type surface", () => {
 		expectTypeOf<IsAny<DefaultParams>>().toEqualTypeOf<false>();
 	});
 
+	it("concrete AgentTool is assignable to AgentTool[] and AgentContext.tools", async () => {
+		const schema = z.object({ n: z.number() });
+		const typed: AgentTool<typeof schema, { doubled: number }> = {
+			name: "double",
+			label: "Double",
+			description: "double a number",
+			parameters: schema,
+			prepareArguments(args) {
+				return schema.parse(args);
+			},
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: String(params.n * 2) }],
+					details: { doubled: params.n * 2 },
+				};
+			},
+		};
+
+		// Regression: method bivariance must allow concrete tools in the bag.
+		const tools: AgentTool[] = [typed];
+		const ctx: AgentContext = {
+			systemPrompt: "sys",
+			messages: [],
+			tools: [typed],
+		};
+
+		expect(tools).toHaveLength(1);
+		expect(ctx.tools).toHaveLength(1);
+		const out = await tools[0]!.execute("id", { n: 3 });
+		expect(out.content[0]).toEqual({ type: "text", text: "6" });
+	});
+
 	it("tool_execution events carry AgentToolResult payloads", () => {
 		const result: AgentToolResult = {
 			content: [{ type: "text", text: "ok" }],

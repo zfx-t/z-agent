@@ -112,6 +112,12 @@ export type AgentToolParametersSchema = z.ZodType<unknown, z.ZodTypeDef, unknown
  *
  * `parameters` is a **zod** schema (ADR-0013). Conversion to JSON-Schema-shaped
  * {@link import("@z-agent/ai").Tool} at the LLM boundary is done by the loop later.
+ *
+ * **Method syntax** for `execute` / `prepareArguments` is intentional: under
+ * `strictFunctionTypes`, property functions are contravariant in parameters, so a
+ * concrete `AgentTool<ZodObject<…>>` would not be assignable to `AgentTool[]`.
+ * Interface methods are checked bivariantly, which is the correct bag typing for
+ * heterogeneous tool registries (loop always validates args before calling execute).
  */
 export interface AgentTool<
 	TParameters extends AgentToolParametersSchema = AgentToolParametersSchema,
@@ -127,17 +133,17 @@ export interface AgentTool<
 	 * Optional shim for raw tool-call arguments before schema validation.
 	 * Must return a value that matches `TParameters` input.
 	 */
-	prepareArguments?: (args: unknown) => z.input<TParameters>;
+	prepareArguments?(args: unknown): z.input<TParameters>;
 	/**
 	 * Execute the tool call (sole tool-body effect boundary — ADR-0010).
 	 * Throw on failure instead of encoding errors in `content`.
 	 */
-	execute: (
+	execute(
 		toolCallId: string,
 		params: z.output<TParameters>,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TDetails>,
-	) => Promise<AgentToolResult<TDetails>>;
+	): Promise<AgentToolResult<TDetails>>;
 	/**
 	 * Per-tool execution mode override.
 	 * If omitted, the run-level default applies.
