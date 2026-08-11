@@ -141,7 +141,8 @@ describe("runAgentLoop error / aborted", () => {
 		expect(assistant && "stopReason" in assistant && assistant.stopReason).toBe("error");
 
 		const types = collector.types();
-		expect(types[types.length - 1]).toBe("agent_end");
+		const withoutUpdates = types.filter((t) => t !== "message_update");
+		expect(withoutUpdates.slice(-2)).toEqual(["turn_end", "agent_end"]);
 		expect(types.filter((t) => t === "turn_start")).toHaveLength(1);
 		expect(types.filter((t) => t === "agent_end")).toHaveLength(1);
 		expect(faux.getPendingResponseCount()).toBe(0);
@@ -178,7 +179,8 @@ describe("runAgentLoop error / aborted", () => {
 
 		const assistant = newMessages.find((m) => m.role === "assistant");
 		expect(assistant && "stopReason" in assistant && assistant.stopReason).toBe("aborted");
-		expect(collector.types().at(-1)).toBe("agent_end");
+		const withoutUpdates = collector.types().filter((t) => t !== "message_update");
+		expect(withoutUpdates.slice(-2)).toEqual(["turn_end", "agent_end"]);
 	});
 });
 
@@ -321,11 +323,15 @@ describe("runAgentLoopContinue", () => {
 			systemPrompt: "s",
 			messages: [user("already there")],
 		};
+		const priorLength = context.messages.length;
 
 		const newMessages = await runAgentLoopContinue(context, config, collector.sink, undefined, faux.streamFn);
 
 		expect(newMessages).toHaveLength(1);
 		expect(newMessages[0]?.role).toBe("assistant");
+		// Isolation: continue copies the transcript; caller's array is unchanged.
+		expect(context.messages).toHaveLength(priorLength);
+		expect(context.messages.every((m) => m.role !== "assistant")).toBe(true);
 
 		const withoutUpdates = collector.types().filter((t) => t !== "message_update");
 		expect(withoutUpdates).toEqual([

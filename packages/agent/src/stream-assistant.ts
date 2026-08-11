@@ -25,7 +25,8 @@ export async function streamAssistant(
 	emit: AgentEventSink,
 	streamFn: StreamFn,
 ): Promise<AssistantMessage> {
-	// AgentMessage[] → AgentMessage[] (optional prune / inject)
+	// AgentMessage[] → AgentMessage[] (optional prune / inject).
+	// transformContext must treat input as read-only and return a new array when changing it.
 	let messages: AgentMessage[] = context.messages;
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);

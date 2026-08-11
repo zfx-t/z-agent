@@ -15,7 +15,10 @@ import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.ts";
 
 /**
  * Start a loop with new prompt messages.
- * Prompts are appended to context and emitted as complete message pairs.
+ * Prompts are appended to an internal context copy and emitted as complete message pairs.
+ *
+ * Does not mutate `context.messages`. Callers own the transcript: append the returned
+ * `newMessages` (prompts + assistant turns produced by this run) into their state.
  */
 export async function runAgentLoop(
 	prompts: AgentMessage[],
@@ -45,6 +48,10 @@ export async function runAgentLoop(
 /**
  * Continue a loop from the current context without adding a prompt.
  * Last message must convert to user or toolResult via convertToLlm (not validated here).
+ *
+ * Does not mutate `context.messages` (array is copied before streaming). Append the
+ * returned `newMessages` (assistant turns from this continue only) into owned state.
+ * Differs from pi, which shares the caller's messages array with streamAssistant.
  */
 export async function runAgentLoopContinue(
 	context: AgentContext,

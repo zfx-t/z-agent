@@ -227,6 +227,10 @@ export interface AgentLoopConfig {
 	/**
 	 * Optional AgentMessage-level transform before `convertToLlm`
 	 * (pruning, inject context). Must not throw or reject.
+	 *
+	 * Treat `messages` as read-only. When pruning or injecting, return a **new** array;
+	 * in-place mutation (`splice` / `pop` on the input) rewrites the live transcript
+	 * because the loop may pass `context.messages` by reference.
 	 */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 
