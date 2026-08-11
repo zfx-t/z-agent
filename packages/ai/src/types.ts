@@ -5,6 +5,8 @@
  * without importing pi packages. Responses HTTP wire types live in a later PR.
  */
 
+import type { AssistantMessageEventStream } from "./event-stream.ts";
+
 // ---------------------------------------------------------------------------
 // Content blocks
 // ---------------------------------------------------------------------------
@@ -175,11 +177,13 @@ export interface StreamOptions {
 /**
  * Provider stream contract.
  *
- * - Must return an {@link AssistantMessageEventStream} (or a Promise of one).
+ * - Must return an `AssistantMessageEventStream` (or a Promise of one).
  * - Must **not** throw for business / request / model failures once invoked.
  * - Failures are encoded as a final {@link AssistantMessage} with
  *   `stopReason` `"error"` or `"aborted"` and optional `errorMessage`,
  *   delivered via the stream (`error` event) or as the stream result.
+ *
+ * The stream class lives in `event-stream.ts` and is re-exported from the package index.
  */
 export type StreamFn = (
 	model: Model,
@@ -192,11 +196,15 @@ export type StreamFn = (
 // ---------------------------------------------------------------------------
 
 /**
- * Event protocol for {@link AssistantMessageEventStream}.
+ * Event protocol for assistant stream turns.
  *
  * Streams emit `start` before partial updates, then terminate with either:
  * - `done` carrying the final successful AssistantMessage, or
  * - `error` carrying the final AssistantMessage with stopReason "error" | "aborted".
+ *
+ * **Tool-call partials:** `toolcall_delta.delta` is a JSON string fragment. Until
+ * `toolcall_end`, `partial.content[i].arguments` may still be `{}` (args are only
+ * guaranteed final on `toolcall_end` / terminal events).
  */
 export type AssistantMessageEvent =
 	| { type: "start"; partial: AssistantMessage }
@@ -215,7 +223,3 @@ export type AssistantMessageEvent =
 			message: AssistantMessage;
 	  }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
-
-// Forward declaration for StreamFn return type (implemented in event-stream.ts).
-import type { AssistantMessageEventStream } from "./event-stream.ts";
-export type { AssistantMessageEventStream };

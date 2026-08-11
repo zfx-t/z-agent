@@ -65,10 +65,31 @@ describe("createFauxStream", () => {
 	it("encodes empty queue as error message (does not throw)", async () => {
 		const faux = createFauxStream();
 		const stream = await faux.streamFn(faux.model, { messages: [] });
+		const events = await collect(stream);
 		const message = await stream.result();
 
+		expect(events.at(-1)?.type).toBe("error");
+		expect(events.length).toBeGreaterThan(0);
+		// Iterator completed (collect returned).
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toBe("No more faux responses queued");
+	});
+
+	it("emits done with reason length for stopReason length", async () => {
+		const faux = createFauxStream({
+			responses: [fauxAssistantMessage("truncated", { stopReason: "length" })],
+		});
+		const stream = await faux.streamFn(faux.model, { messages: [] });
+		const events = await collect(stream);
+		const message = await stream.result();
+
+		const terminal = events.at(-1);
+		expect(terminal?.type).toBe("done");
+		if (terminal?.type === "done") {
+			expect(terminal.reason).toBe("length");
+		}
+		expect(message.stopReason).toBe("length");
+		expect(message.content).toEqual([{ type: "text", text: "truncated" }]);
 	});
 
 	it("drains responses FIFO and supports set/append", async () => {
@@ -106,7 +127,7 @@ describe("createFauxStream", () => {
 		expect(message.content).toEqual([{ type: "text", text: "n=2:call=1" }]);
 	});
 
-	it("respects AbortSignal mid-stream", async () => {
+	it("respects AbortSignal mid-stream and retains partial content", async () => {
 		const controller = new AbortController();
 		const faux = createFauxStream({
 			chunkChars: 1,
@@ -116,9 +137,13 @@ describe("createFauxStream", () => {
 		const stream = await faux.streamFn(faux.model, { messages: [] }, { signal: controller.signal });
 
 		const types: string[] = [];
+		let lastPartialContent: unknown;
 		let aborted = false;
 		for await (const e of stream) {
 			types.push(e.type);
+			if ("partial" in e) {
+				lastPartialContent = e.partial.content;
+			}
 			// Abort after the first delta so remaining chunks see the signal.
 			if (e.type === "text_delta" && !aborted) {
 				aborted = true;
@@ -130,6 +155,13 @@ describe("createFauxStream", () => {
 		expect(types[0]).toBe("start");
 		expect(types.at(-1)).toBe("error");
 		expect(message.stopReason).toBe("aborted");
+		// Regression: abort must not wipe content already observed on partials.
+		expect(message.content.length).toBeGreaterThan(0);
+		expect(message.content[0]).toMatchObject({ type: "text" });
+		if (message.content[0]?.type === "text") {
+			expect(message.content[0].text.length).toBeGreaterThan(0);
+		}
+		expect(lastPartialContent).toEqual(message.content);
 	});
 
 	it("respects already-aborted signal", async () => {

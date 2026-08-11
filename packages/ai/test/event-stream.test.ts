@@ -59,6 +59,35 @@ describe("EventStream", () => {
 		await expect(consumer).resolves.toEqual(["a", "done"]);
 		await expect(stream.result()).resolves.toBe("done");
 	});
+
+	it("end(result) without a completing push resolves result()", async () => {
+		const stream = new EventStream<string, string>(
+			() => false,
+			() => {
+				throw new Error("should not extract from non-completing events");
+			},
+		);
+		stream.push("partial");
+		stream.end("fallback");
+
+		const seen: string[] = [];
+		for await (const e of stream) {
+			seen.push(e);
+		}
+		expect(seen).toEqual(["partial"]);
+		await expect(stream.result()).resolves.toBe("fallback");
+	});
+
+	it("bare end() without result rejects result()", async () => {
+		const stream = new EventStream<string, string>(
+			() => false,
+			() => "unused",
+		);
+		stream.push("x");
+		stream.end();
+
+		await expect(stream.result()).rejects.toThrow("EventStream ended without a final result");
+	});
 });
 
 describe("AssistantMessageEventStream", () => {
@@ -89,5 +118,14 @@ describe("AssistantMessageEventStream", () => {
 			stopReason: "error",
 			errorMessage: "boom",
 		});
+	});
+
+	it("end(message) without done/error still resolves result()", async () => {
+		const stream = createAssistantMessageEventStream();
+		const message = assistant({ content: [], stopReason: "aborted", errorMessage: "manual end" });
+		stream.push({ type: "start", partial: assistant({ stopReason: "pending", content: [] }) });
+		stream.end(message);
+
+		await expect(stream.result()).resolves.toEqual(message);
 	});
 });

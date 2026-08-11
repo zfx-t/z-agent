@@ -1,7 +1,6 @@
 import type { AssistantMessageEventStream } from "./event-stream.ts";
 import { createAssistantMessageEventStream } from "./event-stream.ts";
 import type {
-	AssistantContent,
 	AssistantMessage,
 	Context,
 	Model,
@@ -137,11 +136,11 @@ function yieldTick(): Promise<void> {
 	return new Promise((resolve) => queueMicrotask(resolve));
 }
 
-function clonePartial(message: AssistantMessage, content: AssistantContent[]): AssistantMessage {
+/** Snapshot of the live partial for event payloads (deep-clone content blocks). */
+function snapshotPartial(partial: AssistantMessage): AssistantMessage {
 	return {
-		...message,
-		content: content.map((block) => structuredClone(block)),
-		stopReason: "pending",
+		...partial,
+		content: partial.content.map((block) => structuredClone(block)),
 	};
 }
 
@@ -161,7 +160,7 @@ function createErrorMessage(error: unknown, model: Model): AssistantMessage {
 
 function createAbortedMessage(partial: AssistantMessage): AssistantMessage {
 	return {
-		...partial,
+		...snapshotPartial(partial),
 		stopReason: "aborted",
 		errorMessage: partial.errorMessage ?? "Request was aborted",
 		timestamp: Date.now(),
@@ -170,6 +169,12 @@ function createAbortedMessage(partial: AssistantMessage): AssistantMessage {
 
 /**
  * Stream a scripted assistant message as start → content partials → done/error.
+ *
+ * Mutates a single `partial` (including `partial.content`) so abort terminal
+ * messages retain all streamed blocks — matching agent-loop / pi semantics.
+ *
+ * Tool-call JSON fragments are emitted on `toolcall_delta`; `arguments` on the
+ * partial stay `{}` until `toolcall_end` (final args only guaranteed then).
  */
 async function streamScriptedMessage(
 	stream: AssistantMessageEventStream,
@@ -177,8 +182,12 @@ async function streamScriptedMessage(
 	chunkChars: number,
 	signal: AbortSignal | undefined,
 ): Promise<void> {
-	const content: AssistantContent[] = [];
-	const partial = clonePartial(message, content);
+	// Single live partial: content array is mutated in place (pi style).
+	const partial: AssistantMessage = {
+		...message,
+		content: [],
+		stopReason: "pending",
+	};
 
 	const pushAbort = (): boolean => {
 		if (!signal?.aborted) return false;
@@ -190,7 +199,7 @@ async function streamScriptedMessage(
 
 	if (pushAbort()) return;
 
-	stream.push({ type: "start", partial: { ...partial, content: [...content] } });
+	stream.push({ type: "start", partial: snapshotPartial(partial) });
 
 	for (let index = 0; index < message.content.length; index++) {
 		if (pushAbort()) return;
@@ -200,11 +209,11 @@ async function streamScriptedMessage(
 
 		if (block.type === "thinking") {
 			const thinkingBlock: ThinkingContent = { type: "thinking", thinking: "" };
-			content.push(thinkingBlock);
+			partial.content.push(thinkingBlock);
 			stream.push({
 				type: "thinking_start",
 				contentIndex: index,
-				partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+				partial: snapshotPartial(partial),
 			});
 			for (const chunk of splitChunks(block.thinking, chunkChars)) {
 				await yieldTick();
@@ -214,9 +223,10 @@ async function streamScriptedMessage(
 					type: "thinking_delta",
 					contentIndex: index,
 					delta: chunk,
-					partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+					partial: snapshotPartial(partial),
 				});
 			}
+			if (pushAbort()) return;
 			thinkingBlock.thinking = block.thinking;
 			if (block.thinkingSignature !== undefined) {
 				thinkingBlock.thinkingSignature = block.thinkingSignature;
@@ -228,18 +238,18 @@ async function streamScriptedMessage(
 				type: "thinking_end",
 				contentIndex: index,
 				content: block.thinking,
-				partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+				partial: snapshotPartial(partial),
 			});
 			continue;
 		}
 
 		if (block.type === "text") {
 			const textBlock: TextContent = { type: "text", text: "" };
-			content.push(textBlock);
+			partial.content.push(textBlock);
 			stream.push({
 				type: "text_start",
 				contentIndex: index,
-				partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+				partial: snapshotPartial(partial),
 			});
 			for (const chunk of splitChunks(block.text, chunkChars)) {
 				await yieldTick();
@@ -249,9 +259,10 @@ async function streamScriptedMessage(
 					type: "text_delta",
 					contentIndex: index,
 					delta: chunk,
-					partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+					partial: snapshotPartial(partial),
 				});
 			}
+			if (pushAbort()) return;
 			textBlock.text = block.text;
 			if (block.textSignature !== undefined) {
 				textBlock.textSignature = block.textSignature;
@@ -260,23 +271,23 @@ async function streamScriptedMessage(
 				type: "text_end",
 				contentIndex: index,
 				content: block.text,
-				partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+				partial: snapshotPartial(partial),
 			});
 			continue;
 		}
 
-		// toolCall
+		// toolCall — arguments stay {} until toolcall_end (see AssistantMessageEvent docs).
 		const toolBlock: ToolCall = {
 			type: "toolCall",
 			id: block.id,
 			name: block.name,
 			arguments: {},
 		};
-		content.push(toolBlock);
+		partial.content.push(toolBlock);
 		stream.push({
 			type: "toolcall_start",
 			contentIndex: index,
-			partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+			partial: snapshotPartial(partial),
 		});
 		const argsJson = JSON.stringify(block.arguments);
 		for (const chunk of splitChunks(argsJson, chunkChars)) {
@@ -286,9 +297,10 @@ async function streamScriptedMessage(
 				type: "toolcall_delta",
 				contentIndex: index,
 				delta: chunk,
-				partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+				partial: snapshotPartial(partial),
 			});
 		}
+		if (pushAbort()) return;
 		toolBlock.arguments = block.arguments;
 		if (block.thoughtSignature !== undefined) {
 			toolBlock.thoughtSignature = block.thoughtSignature;
@@ -300,9 +312,12 @@ async function streamScriptedMessage(
 			type: "toolcall_end",
 			contentIndex: index,
 			toolCall: structuredClone(block),
-			partial: { ...partial, content: content.map((b) => structuredClone(b)) },
+			partial: snapshotPartial(partial),
 		});
 	}
+
+	// Abort after last content block, before terminal done/error.
+	if (pushAbort()) return;
 
 	if (message.stopReason === "pending") {
 		const err = createErrorMessage(new Error("Faux response ended without a stop reason"), {
@@ -320,7 +335,7 @@ async function streamScriptedMessage(
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
 		const finalMessage: AssistantMessage = {
 			...message,
-			content: content.map((b) => structuredClone(b)),
+			content: partial.content.map((b) => structuredClone(b)),
 		};
 		stream.push({ type: "error", reason: message.stopReason, error: finalMessage });
 		stream.end(finalMessage);
@@ -329,7 +344,7 @@ async function streamScriptedMessage(
 
 	const finalMessage: AssistantMessage = {
 		...message,
-		content: content.map((b) => structuredClone(b)),
+		content: partial.content.map((b) => structuredClone(b)),
 	};
 	stream.push({
 		type: "done",
