@@ -2,7 +2,8 @@
  * Agent-layer types for @z-agent/agent.
  *
  * Dual message layer (ADR-0006): AgentMessage is the application transcript;
- * LLM {@link Message} from @z-agent/ai is produced only via convertToLlm (later).
+ * LLM {@link Message} from @z-agent/ai is produced only via convertToLlm at the
+ * provider boundary (streamAssistant).
  *
  * Event names/semantics align with the pi agent-loop oracle (ADR-0008).
  * Tool parameter schemas use zod (ADR-0013), not typebox.
@@ -13,6 +14,9 @@ import type {
 	AssistantMessageEvent,
 	ImageContent,
 	Message,
+	Model,
+	StreamFn,
+	StreamOptions,
 	TextContent,
 	ToolCall,
 	ToolResultMessage,
@@ -196,6 +200,54 @@ export interface AgentContext {
 }
 
 // ---------------------------------------------------------------------------
+// Loop config (streamAssistant / runLoop)
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for {@link import("./agent-loop.ts").runAgentLoop} /
+ * {@link import("./stream-assistant.ts").streamAssistant}.
+ *
+ * `convertToLlm` is required (ADR-0006 dual message layer). Provider options
+ * (`apiKey`, `temperature`, …) are forwarded into {@link StreamFn}.
+ *
+ * Tool hooks / queue drains / toolExecution land in later PRs.
+ */
+export interface AgentLoopConfig {
+	/** Model used for the next provider request. */
+	model: Model;
+
+	/**
+	 * Converts AgentMessage[] → LLM Message[] before each provider call.
+	 *
+	 * Filter UI-only / custom roles; map custom roles to user/assistant/toolResult.
+	 * Contract: must not throw or reject — return a safe fallback instead.
+	 */
+	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+
+	/**
+	 * Optional AgentMessage-level transform before `convertToLlm`
+	 * (pruning, inject context). Must not throw or reject.
+	 */
+	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
+
+	/**
+	 * Resolves an API key per provider call (expiring OAuth tokens).
+	 * Must not throw; return undefined when unavailable.
+	 */
+	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+
+	/** Optional StreamOptions fields forwarded to StreamFn (signal is separate). */
+	apiKey?: string;
+	temperature?: number;
+	maxTokens?: number;
+	sessionId?: string;
+	samplingParams?: StreamOptions["samplingParams"];
+}
+
+/** Re-export StreamFn for agent consumers configuring the loop. */
+export type { StreamFn };
+
+// ---------------------------------------------------------------------------
 // Events (pi agent-loop names / semantics)
 // ---------------------------------------------------------------------------
 
@@ -250,6 +302,8 @@ export type {
 	AssistantMessageEvent,
 	ImageContent,
 	Message,
+	Model,
+	StreamOptions,
 	TextContent,
 	ToolCall,
 	ToolResultMessage,
