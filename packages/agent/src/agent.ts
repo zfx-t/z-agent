@@ -2,9 +2,8 @@
  * Stateful Agent shell around runAgentLoop / runAgentLoopContinue.
  *
  * Owns transcript + runtime flags, enforces prompt/continue mutex, wires
- * AbortSignal, and fans out AgentEvents to awaited subscribers.
- *
- * Steering / follow-up queues land in PR 7.
+ * AbortSignal, fans out AgentEvents to awaited subscribers, and exposes
+ * steering / follow-up message queues.
  */
 
 import type { ImageContent, Message, Model, StreamFn, TextContent } from "@z-agent/ai";
@@ -21,8 +20,11 @@ import type {
 	AgentTool,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
+	QueueMode,
 	ToolExecutionMode,
 } from "./types.ts";
+
+export type { QueueMode } from "./types.ts";
 
 function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 	return messages.filter(
@@ -93,10 +95,54 @@ export interface AgentOptions {
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 	/** Default tool execution mode for multi-call assistant turns. */
 	toolExecution?: ToolExecutionMode;
+	/** How queued steering messages are drained (default `"one-at-a-time"`). */
+	steeringMode?: QueueMode;
+	/** How queued follow-up messages are drained (default `"one-at-a-time"`). */
+	followUpMode?: QueueMode;
 	sessionId?: string;
 	apiKey?: string;
 	temperature?: number;
 	maxTokens?: number;
+}
+
+/**
+ * FIFO message queue with drain mode `"all"` | `"one-at-a-time"`.
+ * Drain is pure (no I/O); called from getSteeringMessages / getFollowUpMessages.
+ */
+class PendingMessageQueue {
+	private messages: AgentMessage[] = [];
+	public mode: QueueMode;
+
+	constructor(mode: QueueMode) {
+		this.mode = mode;
+	}
+
+	enqueue(message: AgentMessage): void {
+		this.messages.push(message);
+	}
+
+	hasItems(): boolean {
+		return this.messages.length > 0;
+	}
+
+	drain(): AgentMessage[] {
+		if (this.mode === "all") {
+			const drained = this.messages.slice();
+			this.messages = [];
+			return drained;
+		}
+
+		const first = this.messages[0];
+		if (!first) {
+			return [];
+		}
+		this.messages = this.messages.slice(1);
+		return [first];
+	}
+
+	clear(): void {
+		this.messages = [];
+	}
 }
 
 type ActiveRun = {
@@ -109,11 +155,14 @@ type ActiveRun = {
  * Stateful wrapper around the low-level agent loop.
  *
  * Owns the transcript, emits lifecycle events to subscribers, executes tools
- * via the loop, and enforces mutual exclusion on `prompt` / `continue`.
+ * via the loop, enforces mutual exclusion on `prompt` / `continue`, and
+ * exposes steering / follow-up queues for mid-run and post-stop injection.
  */
 export class Agent {
 	private _state: MutableAgentState;
 	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
+	private readonly steeringQueue: PendingMessageQueue;
+	private readonly followUpQueue: PendingMessageQueue;
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	public transformContext?: (
@@ -147,6 +196,8 @@ export class Agent {
 		this.beforeToolCall = options.beforeToolCall;
 		this.afterToolCall = options.afterToolCall;
 		this.toolExecution = options.toolExecution ?? "parallel";
+		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
+		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.sessionId = options.sessionId;
 		this.apiKey = options.apiKey;
 		this.temperature = options.temperature;
@@ -178,6 +229,55 @@ export class Agent {
 		return this._state;
 	}
 
+	/** Controls how queued steering messages are drained. */
+	set steeringMode(mode: QueueMode) {
+		this.steeringQueue.mode = mode;
+	}
+
+	get steeringMode(): QueueMode {
+		return this.steeringQueue.mode;
+	}
+
+	/** Controls how queued follow-up messages are drained. */
+	set followUpMode(mode: QueueMode) {
+		this.followUpQueue.mode = mode;
+	}
+
+	get followUpMode(): QueueMode {
+		return this.followUpQueue.mode;
+	}
+
+	/** Queue a message to inject after the current assistant turn finishes (post tools). */
+	steer(message: AgentMessage): void {
+		this.steeringQueue.enqueue(message);
+	}
+
+	/** Queue a message to run only after the agent would otherwise stop. */
+	followUp(message: AgentMessage): void {
+		this.followUpQueue.enqueue(message);
+	}
+
+	/** Remove all queued steering messages. */
+	clearSteeringQueue(): void {
+		this.steeringQueue.clear();
+	}
+
+	/** Remove all queued follow-up messages. */
+	clearFollowUpQueue(): void {
+		this.followUpQueue.clear();
+	}
+
+	/** Remove all queued steering and follow-up messages. */
+	clearAllQueues(): void {
+		this.clearSteeringQueue();
+		this.clearFollowUpQueue();
+	}
+
+	/** Returns true when either queue still contains pending messages. */
+	hasQueuedMessages(): boolean {
+		return this.steeringQueue.hasItems() || this.followUpQueue.hasItems();
+	}
+
 	/** Active abort signal for the current run, if any. */
 	get signal(): AbortSignal | undefined {
 		return this.activeRun?.abortController.signal;
@@ -197,7 +297,7 @@ export class Agent {
 		return this.activeRun?.promise ?? Promise.resolve();
 	}
 
-	/** Clear transcript state and runtime flags. Throws if a run is active. */
+	/** Clear transcript state, runtime flags, and queued messages. Throws if a run is active. */
 	reset(): void {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before resetting.");
@@ -208,6 +308,7 @@ export class Agent {
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
 		this._state.errorMessage = undefined;
+		this.clearAllQueues();
 	}
 
 	/** Start a new prompt from text, a single message, or a batch of messages. */
@@ -225,7 +326,10 @@ export class Agent {
 
 	/**
 	 * Continue from the current transcript.
-	 * Last message must not be an assistant message (user or toolResult expected).
+	 *
+	 * When the last message is an assistant response, drains steering then
+	 * follow-up queues (if any) as a new prompt. Otherwise continues from
+	 * user / toolResult tail.
 	 */
 	async continue(): Promise<void> {
 		if (this.activeRun) {
@@ -238,6 +342,19 @@ export class Agent {
 		}
 
 		if (isAssistantRole(lastMessage)) {
+			const queuedSteering = this.steeringQueue.drain();
+			if (queuedSteering.length > 0) {
+				// Already drained for this prompt; skip the loop's initial steering poll.
+				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+				return;
+			}
+
+			const queuedFollowUps = this.followUpQueue.drain();
+			if (queuedFollowUps.length > 0) {
+				await this.runPromptMessages(queuedFollowUps);
+				return;
+			}
+
 			throw new Error("Cannot continue from message role: assistant");
 		}
 
@@ -263,12 +380,15 @@ export class Agent {
 		return [{ role: "user", content, timestamp: Date.now() }];
 	}
 
-	private async runPromptMessages(messages: AgentMessage[]): Promise<void> {
+	private async runPromptMessages(
+		messages: AgentMessage[],
+		options: { skipInitialSteeringPoll?: boolean } = {},
+	): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
 			await runAgentLoop(
 				messages,
 				this.createContextSnapshot(),
-				this.createLoopConfig(),
+				this.createLoopConfig(options),
 				(event) => this.processEvents(event),
 				signal,
 				this.streamFunction,
@@ -296,7 +416,8 @@ export class Agent {
 		};
 	}
 
-	private createLoopConfig(): AgentLoopConfig {
+	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
+		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
 		return {
 			model: this._state.model,
 			convertToLlm: this.convertToLlm,
@@ -309,6 +430,14 @@ export class Agent {
 			apiKey: this.apiKey,
 			temperature: this.temperature,
 			maxTokens: this.maxTokens,
+			getSteeringMessages: async () => {
+				if (skipInitialSteeringPoll) {
+					skipInitialSteeringPoll = false;
+					return [];
+				}
+				return this.steeringQueue.drain();
+			},
+			getFollowUpMessages: async () => this.followUpQueue.drain(),
 		};
 	}
 

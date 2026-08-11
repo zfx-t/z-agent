@@ -34,7 +34,7 @@ import type { z } from "zod";
  * - `"all"`: drain every queued message
  * - `"one-at-a-time"`: drain only the oldest; leave the rest for later points
  *
- * Defaults (when shell/queues land): steering and follow-up use `"one-at-a-time"`.
+ * Defaults: steering and follow-up use `"one-at-a-time"`.
  */
 export type QueueMode = "all" | "one-at-a-time";
 
@@ -274,7 +274,9 @@ export interface AgentState {
  * (`apiKey`, `temperature`, …) are forwarded into {@link StreamFn}.
  *
  * Tool hooks: prepare (zod + beforeToolCall) → execute → afterToolCall (ADR-0009).
- * toolExecution defaults to `"parallel"` (three-phase). Queue drains land in later PRs.
+ * toolExecution defaults to `"parallel"` (three-phase).
+ * Queue drains: {@link AgentLoopConfig.getSteeringMessages} after each turn;
+ * {@link AgentLoopConfig.getFollowUpMessages} when the agent would otherwise stop.
  */
 export interface AgentLoopConfig {
 	/** Model used for the next provider request. */
@@ -328,6 +330,27 @@ export interface AgentLoopConfig {
 	 * Contract: must not throw (throws become error toolResults); honor `signal`.
 	 */
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+
+	/**
+	 * Returns steering messages to inject mid-run.
+	 *
+	 * Called at loop start and after each turn completes (tools finished, `turn_end`
+	 * emitted). Returned messages are injected with `message_start`/`message_end`
+	 * before the next assistant stream. Tool calls from the current turn are not skipped.
+	 *
+	 * Contract: must not throw or reject. Return `[]` when nothing is pending.
+	 */
+	getSteeringMessages?: () => Promise<AgentMessage[]>;
+
+	/**
+	 * Returns follow-up messages when the agent would otherwise stop.
+	 *
+	 * Called only after the inner loop exits (no more tool calls and no steering left).
+	 * If messages are returned, they are injected and the outer loop continues.
+	 *
+	 * Contract: must not throw or reject. Return `[]` when nothing is pending.
+	 */
+	getFollowUpMessages?: () => Promise<AgentMessage[]>;
 
 	/** Optional StreamOptions fields forwarded to StreamFn (signal is separate). */
 	apiKey?: string;

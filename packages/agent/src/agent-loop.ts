@@ -1,8 +1,12 @@
 /**
  * Double-while agent loop (pi agent-loop oracle structure).
  *
- * Outer while: follow-up drain (stub empty until queues land).
- * Inner while: tool batches + steering (steering empty until queues land).
+ * Outer while: follow-up drain when the agent would otherwise stop.
+ * Inner while: tool batches + steering injection after each turn.
+ *
+ * Drain points (oracle):
+ * - Steering: after turn completes (tools finished), before next assistant
+ * - Follow-up: only when no tools and no steering left
  *
  * Effect boundaries (ADR-0010):
  * - streamAssistant (provider)
@@ -98,6 +102,9 @@ export async function runAgentLoopContinue(
  * When the assistant requests tools: prepare → execute → after
  * (parallel three-phase by default; sequential when configured or forced).
  * hasMoreToolCalls stays true unless every finalized result sets terminate:true.
+ *
+ * Steering is polled after each completed turn (tools already finished).
+ * Follow-up is polled only when the agent would stop (no tools, no steering).
  */
 export async function runLoop(
 	initialContext: AgentContext,
@@ -109,13 +116,14 @@ export async function runLoop(
 ): Promise<void> {
 	const currentContext = initialContext;
 	let firstTurn = true;
-	// Steering drain (PR7); empty until queues land.
-	let pendingMessages: AgentMessage[] = [];
+	// Steering may already be queued when the run starts (user typed while waiting).
+	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) ?? [];
 
-	// Outer loop: follow-up drain when agent would stop (PR7; stub empty).
+	// Outer loop: continues when follow-up messages arrive after the agent would stop.
 	while (true) {
 		let hasMoreToolCalls = true;
 
+		// Inner loop: tool batches and steering injection.
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			if (!firstTurn) {
 				await emit({ type: "turn_start" });
@@ -123,6 +131,7 @@ export async function runLoop(
 				firstTurn = false;
 			}
 
+			// Inject pending steering / follow-up before the next assistant response.
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
 					await emit({ type: "message_start", message });
@@ -163,11 +172,17 @@ export async function runLoop(
 
 			await emit({ type: "turn_end", message, toolResults });
 
-			// Steering poll (PR7) — always empty for now.
-			pendingMessages = [];
+			// Steering after turn completes (tools finished); does not skip pending tools.
+			pendingMessages = (await config.getSteeringMessages?.()) ?? [];
 		}
 
-		// Follow-up poll (PR7) — stub empty; exit outer loop.
+		// Agent would stop here. Check for follow-up messages.
+		const followUpMessages = (await config.getFollowUpMessages?.()) ?? [];
+		if (followUpMessages.length > 0) {
+			pendingMessages = followUpMessages;
+			continue;
+		}
+
 		break;
 	}
 

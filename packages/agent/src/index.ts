@@ -4,7 +4,7 @@
  * streamAssistant + runLoop with tool pipeline (prepare → execute → after).
  * Default toolExecution is parallel three-phase; sequential when configured
  * or when any tool sets executionMode sequential.
- * Agent shell: prompt mutex, subscribe, abort, continue (queues in PR 7).
+ * Agent shell: prompt mutex, subscribe, abort, continue, steer / followUp queues.
  */
 
 export const AGENT_PACKAGE = "@z-agent/agent" as const;

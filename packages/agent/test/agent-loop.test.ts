@@ -995,3 +995,221 @@ describe("runAgentLoopContinue", () => {
 		).rejects.toThrow(/assistant/);
 	});
 });
+
+describe("steering and follow-up drains", () => {
+	it("injects steering after tools finish, before the next assistant turn", async () => {
+		const executed: string[] = [];
+		const tool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "echo",
+			parameters: z.object({ value: z.string() }),
+			async execute(_id, params) {
+				executed.push((params as { value: string }).value);
+				return {
+					content: [{ type: "text", text: `ok:${(params as { value: string }).value}` }],
+					details: {},
+				};
+			},
+		};
+
+		const interrupt = user("interrupt", 99);
+		let steeringDelivered = false;
+		let sawInterruptInContext = false;
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				(ctx) => {
+					sawInterruptInContext = ctx.messages.some(
+						(m) =>
+							m.role === "user" &&
+							(m.content === "interrupt" || JSON.stringify(m.content).includes("interrupt")),
+					);
+					return fauxAssistantMessage("done");
+				},
+			],
+		});
+
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+			toolExecution: "sequential",
+			getSteeringMessages: async () => {
+				// After both tools have run, deliver steering once (post turn_end poll).
+				if (executed.length >= 2 && !steeringDelivered) {
+					steeringDelivered = true;
+					return [interrupt];
+				}
+				return [];
+			},
+		};
+
+		await runAgentLoop(
+			[user("start")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		// Both tools run before steering injection.
+		expect(executed).toEqual(["first", "second"]);
+		expect(sawInterruptInContext).toBe(true);
+
+		const eventSequence = collector.events.flatMap((event) => {
+			if (event.type !== "message_start") return [];
+			if (event.message.role === "toolResult" && "toolCallId" in event.message) {
+				return [`tool:${event.message.toolCallId}`];
+			}
+			if (event.message.role === "user") {
+				const content = event.message.content;
+				if (typeof content === "string") return [content];
+			}
+			return [];
+		});
+		expect(eventSequence.indexOf("tool:tool-1")).toBeLessThan(eventSequence.indexOf("interrupt"));
+		expect(eventSequence.indexOf("tool:tool-2")).toBeLessThan(eventSequence.indexOf("interrupt"));
+	});
+
+	it("does not inject follow-up until natural stop (no tools, no steering)", async () => {
+		const tool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "echo",
+			parameters: z.object({ value: z.string() }),
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: `ok:${(params as { value: string }).value}` }],
+					details: {},
+				};
+			},
+		};
+
+		let steeringPolls = 0;
+		let followUpPolls = 0;
+		let llmCalls = 0;
+		const followUpMsg = user("follow-up", 50);
+
+		const faux = createFauxStream({
+			responses: [
+				() => {
+					llmCalls++;
+					return fauxAssistantMessage([fauxToolCall("echo", { value: "a" }, { id: "t1" })], {
+						stopReason: "toolUse",
+					});
+				},
+				() => {
+					llmCalls++;
+					return fauxAssistantMessage("after tools");
+				},
+				() => {
+					llmCalls++;
+					return fauxAssistantMessage("after follow-up");
+				},
+			],
+		});
+
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+			getSteeringMessages: async () => {
+				steeringPolls++;
+				return [];
+			},
+			getFollowUpMessages: async () => {
+				followUpPolls++;
+				return followUpPolls === 1 ? [followUpMsg] : [];
+			},
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("start")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		// Initial steering + after turn1 (tools) + after turn2 (text) = 3 steering polls.
+		// Follow-up only once agent would stop (after turn2 text, no tools/steering).
+		expect(llmCalls).toBe(3);
+		expect(followUpPolls).toBeGreaterThanOrEqual(1);
+		expect(steeringPolls).toBeGreaterThanOrEqual(2);
+
+		const roles = newMessages.map((m) => m.role);
+		// user, assistant(tool), toolResult, assistant(text), follow-up user, assistant(text)
+		expect(roles).toEqual(["user", "assistant", "toolResult", "assistant", "user", "assistant"]);
+
+		// Follow-up user message appears after the first natural stop assistant.
+		const userTexts = newMessages
+			.filter((m) => m.role === "user")
+			.map((m) => (typeof m.content === "string" ? m.content : ""));
+		expect(userTexts).toEqual(["start", "follow-up"]);
+	});
+
+	it("drains follow-up only after steering is exhausted", async () => {
+		let call = 0;
+		const reply = () => {
+			call++;
+			return fauxAssistantMessage(`reply-${call}`);
+		};
+		const faux = createFauxStream({
+			// start+s1, s2, follow → 3 turns (FIFO queue, one entry each)
+			responses: [reply, reply, reply],
+		});
+
+		let steeringLeft = [user("steer-1", 2), user("steer-2", 3)];
+		let followUpLeft = [user("follow", 4)];
+		const followUpPollOrder: string[] = [];
+
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+			// one-at-a-time style drains in the callbacks
+			getSteeringMessages: async () => {
+				if (steeringLeft.length === 0) return [];
+				const next = steeringLeft[0]!;
+				steeringLeft = steeringLeft.slice(1);
+				return [next];
+			},
+			getFollowUpMessages: async () => {
+				followUpPollOrder.push(`steering-remaining=${steeringLeft.length}`);
+				if (followUpLeft.length === 0) return [];
+				const next = followUpLeft[0]!;
+				followUpLeft = followUpLeft.slice(1);
+				return [next];
+			},
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("start", 1)],
+			{ systemPrompt: "", messages: [] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		// Follow-up only polled when steering queue empty.
+		expect(followUpPollOrder.every((s) => s === "steering-remaining=0")).toBe(true);
+
+		const userTexts = newMessages
+			.filter((m) => m.role === "user")
+			.map((m) => (typeof m.content === "string" ? m.content : ""));
+		expect(userTexts).toEqual(["start", "steer-1", "steer-2", "follow"]);
+		// Initial drain injects s1 before first assistant; s2 then follow → 3 LLM calls.
+		expect(call).toBe(3);
+	});
+});
