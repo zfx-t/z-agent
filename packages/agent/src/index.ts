@@ -3,11 +3,14 @@
  *
  * streamAssistant + runLoop with tool pipeline (prepare → execute → after).
  * Default toolExecution is parallel three-phase; sequential when configured
- * or when any tool sets executionMode sequential. Agent shell, queues later.
+ * or when any tool sets executionMode sequential.
+ * Agent shell: prompt mutex, subscribe, abort, continue (queues in PR 7).
  */
 
 export const AGENT_PACKAGE = "@z-agent/agent" as const;
 
+export type { AgentOptions } from "./agent.ts";
+export { Agent } from "./agent.ts";
 export { runAgentLoop, runAgentLoopContinue, runLoop } from "./agent-loop.ts";
 export type {
 	AgentEventCollector,
@@ -27,6 +30,7 @@ export type {
 	AgentEventType,
 	AgentLoopConfig,
 	AgentMessage,
+	AgentState,
 	AgentTool,
 	AgentToolCall,
 	AgentToolParametersSchema,

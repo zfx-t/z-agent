@@ -228,6 +228,41 @@ export interface AgentContext {
 }
 
 // ---------------------------------------------------------------------------
+// Agent shell state (PR 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Live agent shell state.
+ *
+ * `tools` and `messages` use accessor properties so implementations can copy
+ * assigned arrays before storing them.
+ */
+export interface AgentState {
+	/** System prompt sent with each model request. */
+	systemPrompt: string;
+	/** Active model used for future turns. */
+	model: Model;
+	/** Available tools. Assigning a new array copies the top-level array. */
+	set tools(tools: AgentTool[]);
+	get tools(): AgentTool[];
+	/** Conversation transcript. Assigning a new array copies the top-level array. */
+	set messages(messages: AgentMessage[]);
+	get messages(): AgentMessage[];
+	/**
+	 * True while the agent is processing a prompt or continuation.
+	 *
+	 * Remains true until awaited `agent_end` listeners settle.
+	 */
+	readonly isStreaming: boolean;
+	/** Partial assistant message for the current streamed response, if any. */
+	readonly streamingMessage?: AgentMessage;
+	/** Tool call ids currently executing. */
+	readonly pendingToolCalls: ReadonlySet<string>;
+	/** Error message from the most recent failed or aborted assistant turn, if any. */
+	readonly errorMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Loop config (streamAssistant / runLoop)
 // ---------------------------------------------------------------------------
 

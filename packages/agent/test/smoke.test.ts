@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	AGENT_PACKAGE,
+	Agent,
 	composeAgentEventSinks,
 	createAgentEventCollector,
 	emitAgentEvent,
@@ -15,7 +16,7 @@ describe("@z-agent/agent", () => {
 		expect(AGENT_PACKAGE).toBe("@z-agent/agent");
 	});
 
-	it("re-exports emit + loop surface", async () => {
+	it("re-exports emit + loop + Agent shell surface", async () => {
 		expect(typeof createAgentEventCollector).toBe("function");
 		expect(typeof composeAgentEventSinks).toBe("function");
 		expect(typeof emitAgentEvent).toBe("function");
@@ -23,6 +24,7 @@ describe("@z-agent/agent", () => {
 		expect(typeof runAgentLoopContinue).toBe("function");
 		expect(typeof runLoop).toBe("function");
 		expect(typeof streamAssistant).toBe("function");
+		expect(typeof Agent).toBe("function");
 		const c = createAgentEventCollector();
 		await emitAgentEvent(c.sink, { type: "agent_start" });
 		expect(c.types()).toEqual(["agent_start"]);
