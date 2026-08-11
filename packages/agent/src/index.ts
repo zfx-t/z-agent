@@ -1,8 +1,8 @@
 /**
  * @z-agent/agent — in-memory agent runtime.
  *
- * PR 3 surface: streamAssistant + runLoop (tools deferred), AgentLoopConfig.
- * Tool execution, Agent shell, and queues land in later PRs (see docs/design.md).
+ * PR 4 surface: streamAssistant + runLoop with sequential tool pipeline
+ * (prepare → execute → after). Parallel tools, Agent shell, queues later.
  */
 
 export const AGENT_PACKAGE = "@z-agent/agent" as const;
@@ -19,6 +19,7 @@ export {
 } from "./emit.ts";
 export { streamAssistant } from "./stream-assistant.ts";
 export type {
+	AfterToolCallContext,
 	AfterToolCallResult,
 	AgentContext,
 	AgentEvent,
@@ -32,6 +33,7 @@ export type {
 	AgentToolUpdateCallback,
 	AssistantMessage,
 	AssistantMessageEvent,
+	BeforeToolCallContext,
 	BeforeToolCallResult,
 	CustomAgentMessages,
 	ImageContent,

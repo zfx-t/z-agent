@@ -156,7 +156,7 @@ export interface AgentTool<
 }
 
 // ---------------------------------------------------------------------------
-// before / after tool hooks (types only; wiring in later PRs)
+// before / after tool hooks
 // ---------------------------------------------------------------------------
 
 /**
@@ -175,7 +175,7 @@ export interface BeforeToolCallResult {
 
 /**
  * Partial override from `afterToolCall`.
- * Omitted fields keep original values; no deep merge.
+ * Field-by-field replace; omitted fields keep original values; no deep merge.
  */
 export interface AfterToolCallResult {
 	content?: (TextContent | ImageContent)[];
@@ -183,6 +183,34 @@ export interface AfterToolCallResult {
 	isError?: boolean;
 	usage?: Usage;
 	terminate?: boolean;
+}
+
+/** Context passed to `beforeToolCall` (after zod validation). */
+export interface BeforeToolCallContext {
+	/** The assistant message that requested the tool call. */
+	assistantMessage: AssistantMessage;
+	/** The raw tool call block from `assistantMessage.content`. */
+	toolCall: AgentToolCall;
+	/** Validated tool arguments (zod output). */
+	args: unknown;
+	/** Current agent context at prepare time. */
+	context: AgentContext;
+}
+
+/** Context passed to `afterToolCall` (before tool_execution_end / toolResult emit). */
+export interface AfterToolCallContext {
+	/** The assistant message that requested the tool call. */
+	assistantMessage: AssistantMessage;
+	/** The raw tool call block from `assistantMessage.content`. */
+	toolCall: AgentToolCall;
+	/** Validated tool arguments used for execute. */
+	args: unknown;
+	/** The executed tool result before any `afterToolCall` overrides. */
+	result: AgentToolResult;
+	/** Whether the executed result is currently treated as an error. */
+	isError: boolean;
+	/** Current agent context at finalize time. */
+	context: AgentContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +238,8 @@ export interface AgentContext {
  * `convertToLlm` is required (ADR-0006 dual message layer). Provider options
  * (`apiKey`, `temperature`, …) are forwarded into {@link StreamFn}.
  *
- * Tool hooks / queue drains / toolExecution land in later PRs.
+ * Tool hooks: prepare (zod + beforeToolCall) → execute → afterToolCall (ADR-0009).
+ * Parallel toolExecution / queue drains land in later PRs.
  */
 export interface AgentLoopConfig {
 	/** Model used for the next provider request. */
@@ -239,6 +268,21 @@ export interface AgentLoopConfig {
 	 * Must not throw; return undefined when unavailable.
 	 */
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+
+	/**
+	 * Called after zod validation, before `tool.execute`.
+	 * Return `{ block: true }` to skip execute and emit an error toolResult.
+	 * Contract: must not throw; honor `signal` when provided.
+	 */
+	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+
+	/**
+	 * Called after execute (or when after would run on a prepared call), before
+	 * `tool_execution_end` and toolResult message events.
+	 * Field-by-field overrides; omitted fields keep original values.
+	 * Contract: must not throw (throws become error toolResults); honor `signal`.
+	 */
+	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 
 	/** Optional StreamOptions fields forwarded to StreamFn (signal is separate). */
 	apiKey?: string;

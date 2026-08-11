@@ -1,9 +1,11 @@
 import { createFauxStream, fauxAssistantMessage, fauxText, fauxToolCall, type Message } from "@z-agent/ai";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
 	type AgentContext,
 	type AgentLoopConfig,
 	type AgentMessage,
+	type AgentTool,
 	createAgentEventCollector,
 	runAgentLoop,
 	runAgentLoopContinue,
@@ -265,13 +267,37 @@ describe("convertToLlm / transformContext", () => {
 	});
 });
 
-describe("tools deferred (PR3)", () => {
-	it("ends turn without tool_execution when assistant requests tools", async () => {
+describe("sequential tools (prepare → execute → after)", () => {
+	const echoSchema = z.object({ value: z.string() });
+
+	function echoTool(
+		execute: AgentTool<typeof echoSchema, { value: string }>["execute"],
+	): AgentTool<typeof echoSchema, { value: string }> {
+		return {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: echoSchema,
+			execute,
+		};
+	}
+
+	it("executes a successful tool then runs another assistant turn", async () => {
+		const executed: string[] = [];
+		const tool = echoTool(async (_id, params) => {
+			executed.push(params.value);
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+			};
+		});
+
 		const faux = createFauxStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { x: 1 }, { id: "c1" })], {
+				fauxAssistantMessage([fauxToolCall("echo", { value: "hello" }, { id: "c1" })], {
 					stopReason: "toolUse",
 				}),
+				fauxAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
@@ -282,30 +308,321 @@ describe("tools deferred (PR3)", () => {
 
 		const newMessages = await runAgentLoop(
 			[user("use tool")],
-			{ systemPrompt: "", messages: [] },
+			{ systemPrompt: "", messages: [], tools: [tool] },
 			config,
 			collector.sink,
 			undefined,
 			faux.streamFn,
 		);
 
-		expect(newMessages).toHaveLength(2);
-		const assistant = newMessages[1];
-		expect(assistant?.role).toBe("assistant");
-		if (assistant?.role === "assistant") {
-			expect(assistant.stopReason).toBe("toolUse");
-		}
+		expect(executed).toEqual(["hello"]);
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
 
-		const types = collector.types();
-		expect(types).not.toContain("tool_execution_start");
-		expect(types).not.toContain("tool_execution_end");
-		expect(types.filter((t) => t === "turn_start")).toHaveLength(1);
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
+		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toEqual([
+			{ type: "text", text: "echoed: hello" },
+		]);
+
+		const types = collector.types().filter((t) => t !== "message_update");
+		// tool_execution_start → end → toolResult message pair inside first turn
+		expect(types).toContain("tool_execution_start");
+		expect(types).toContain("tool_execution_end");
+		expect(types.filter((t) => t === "turn_start")).toHaveLength(2);
 		expect(types.at(-1)).toBe("agent_end");
 
-		const turnEnd = collector.events.find((e) => e.type === "turn_end");
-		if (turnEnd?.type === "turn_end") {
-			expect(turnEnd.toolResults).toEqual([]);
+		const turnEnds = collector.events.filter((e) => e.type === "turn_end");
+		expect(turnEnds).toHaveLength(2);
+		if (turnEnds[0]?.type === "turn_end") {
+			expect(turnEnds[0].toolResults).toHaveLength(1);
+			expect(turnEnds[0].toolResults[0]?.toolCallId).toBe("c1");
 		}
+		if (turnEnds[1]?.type === "turn_end") {
+			expect(turnEnds[1].toolResults).toEqual([]);
+		}
+	});
+
+	it("rejects invalid args without calling execute", async () => {
+		let executed = false;
+		const tool = echoTool(async () => {
+			executed = true;
+			return { content: [{ type: "text", text: "nope" }], details: { value: "x" } };
+		});
+
+		const faux = createFauxStream({
+			responses: [
+				// missing required `value`
+				fauxAssistantMessage([fauxToolCall("echo", { wrong: 1 }, { id: "bad" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("recovered"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("bad args")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		expect(executed).toBe(false);
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(true);
+		const text =
+			toolResult?.role === "toolResult"
+				? toolResult.content.find((c) => c.type === "text" && "text" in c)
+				: undefined;
+		expect(text && "text" in text ? text.text : "").toContain("Validation failed");
+		expect(text && "text" in text ? text.text : "").toContain("echo");
+
+		const toolEnd = collector.events.find((e) => e.type === "tool_execution_end");
+		expect(toolEnd?.type === "tool_execution_end" && toolEnd.isError).toBe(true);
+		// Still continues for another LLM turn with the error result
+		expect(newMessages.filter((m) => m.role === "assistant")).toHaveLength(2);
+	});
+
+	it("blocks execute when beforeToolCall returns block", async () => {
+		let executed = false;
+		const tool = echoTool(async () => {
+			executed = true;
+			return { content: [{ type: "text", text: "nope" }], details: { value: "x" } };
+		});
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("echo", { value: "hi" }, { id: "b1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("after block"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+			beforeToolCall: async () => ({ block: true, reason: "Blocked by policy" }),
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("block me")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		expect(executed).toBe(false);
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(true);
+		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toContainEqual({
+			type: "text",
+			text: "Blocked by policy",
+		});
+		// Non-terminating block still allows follow-up LLM turn
+		expect(newMessages.filter((m) => m.role === "assistant")).toHaveLength(2);
+	});
+
+	it("applies afterToolCall field-by-field overrides", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: `raw: ${params.value}` }],
+			details: { value: params.value, original: true },
+		}));
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("echo", { value: "x" }, { id: "a1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+			afterToolCall: async () => ({
+				content: [{ type: "text", text: "overridden" }],
+				details: { patched: true },
+				isError: false,
+			}),
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("after")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			createAgentEventCollector().sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toEqual([
+			{ type: "text", text: "overridden" },
+		]);
+		expect(toolResult?.role === "toolResult" ? toolResult.details : undefined).toEqual({ patched: true });
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
+	});
+
+	it("fails entire tool batch without execute when stopReason is length", async () => {
+		const executed: string[] = [];
+		const tool = echoTool(async (_id, params) => {
+			executed.push(params.value);
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+			};
+		});
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("echo", { value: "hel" }, { id: "t1" }),
+						fauxToolCall("echo", { value: "lo" }, { id: "t2" }),
+					],
+					{ stopReason: "length" },
+				),
+				fauxAssistantMessage("re-issue ok"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("truncated")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		expect(executed).toEqual([]);
+		const toolResults = newMessages.filter((m) => m.role === "toolResult");
+		expect(toolResults).toHaveLength(2);
+		for (const tr of toolResults) {
+			if (tr.role !== "toolResult") continue;
+			expect(tr.isError).toBe(true);
+			const text = tr.content.find((c) => c.type === "text");
+			expect(text && "text" in text ? text.text : "").toContain("output token limit");
+		}
+
+		const toolEnds = collector.events.filter((e) => e.type === "tool_execution_end");
+		expect(toolEnds).toHaveLength(2);
+		expect(toolEnds.every((e) => e.type === "tool_execution_end" && e.isError)).toBe(true);
+
+		// Loop continues so the model can re-issue complete tool calls
+		expect(newMessages.filter((m) => m.role === "assistant")).toHaveLength(2);
+	});
+
+	it("stops further LLM calls when every finalized result has terminate:true", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: `echoed: ${params.value}` }],
+			details: { value: params.value },
+			terminate: true,
+		}));
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("echo", { value: "stop" }, { id: "term" })], {
+					stopReason: "toolUse",
+				}),
+				// Must not be consumed
+				fauxAssistantMessage("should not run"),
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("terminate")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			config,
+			createAgentEventCollector().sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(faux.getPendingResponseCount()).toBe(1);
+	});
+
+	it("returns error toolResult for unknown tool without execute", async () => {
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("missing", { a: 1 }, { id: "u1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("ok"),
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: faux.model,
+			convertToLlm: identityConvert,
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("unknown")],
+			{ systemPrompt: "", messages: [], tools: [] },
+			config,
+			createAgentEventCollector().sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(true);
+		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toContainEqual({
+			type: "text",
+			text: "Tool missing not found",
+		});
+	});
+
+	it("emits toolResult message_start/end around tool_execution_end", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: params.value }],
+			details: { value: params.value },
+		}));
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("echo", { value: "z" }, { id: "ord" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		await runAgentLoop(
+			[user("order")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: faux.model, convertToLlm: identityConvert },
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		const types = collector.types().filter((t) => t !== "message_update");
+		const startIdx = types.indexOf("tool_execution_start");
+		const endIdx = types.indexOf("tool_execution_end");
+		// After tool_execution_end: message_start + message_end for toolResult
+		expect(startIdx).toBeGreaterThan(-1);
+		expect(endIdx).toBeGreaterThan(startIdx);
+		expect(types[endIdx + 1]).toBe("message_start");
+		expect(types[endIdx + 2]).toBe("message_end");
 	});
 });
 
