@@ -1,0 +1,22 @@
+{
+	"name": "z-agent-monorepo",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"check": "biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit",
+		"test": "vitest --run",
+		"format": "biome check --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "3.2.4"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	}
+}

@@ -1,0 +1,29 @@
+{
+	"name": "@z-agent/agent",
+	"version": "0.0.0",
+	"private": true,
+	"description": "In-memory agent loop: messages, tools, queues, Agent shell",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"import": "./src/index.ts"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"src",
+		"README.md"
+	],
+	"scripts": {
+		"test": "vitest --run"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"@z-agent/ai": "0.0.0",
+		"zod": "3.25.76"
+	}
+}
