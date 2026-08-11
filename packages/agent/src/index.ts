@@ -1,8 +1,9 @@
 /**
  * @z-agent/agent — in-memory agent runtime.
  *
- * PR 4 surface: streamAssistant + runLoop with sequential tool pipeline
- * (prepare → execute → after). Parallel tools, Agent shell, queues later.
+ * streamAssistant + runLoop with tool pipeline (prepare → execute → after).
+ * Default toolExecution is parallel three-phase; sequential when configured
+ * or when any tool sets executionMode sequential. Agent shell, queues later.
  */
 
 export const AGENT_PACKAGE = "@z-agent/agent" as const;

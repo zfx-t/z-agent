@@ -239,7 +239,7 @@ export interface AgentContext {
  * (`apiKey`, `temperature`, …) are forwarded into {@link StreamFn}.
  *
  * Tool hooks: prepare (zod + beforeToolCall) → execute → afterToolCall (ADR-0009).
- * Parallel toolExecution / queue drains land in later PRs.
+ * toolExecution defaults to `"parallel"` (three-phase). Queue drains land in later PRs.
  */
 export interface AgentLoopConfig {
 	/** Model used for the next provider request. */
@@ -268,6 +268,16 @@ export interface AgentLoopConfig {
 	 * Must not throw; return undefined when unavailable.
 	 */
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+
+	/**
+	 * How tool calls from one assistant message are executed.
+	 * - `"sequential"`: prepare → execute → finalize each call before the next
+	 * - `"parallel"`: prepare all sequentially, execute allowed concurrently;
+	 *   `tool_execution_end` in completion order; toolResult artifacts in source order
+	 *
+	 * Default: `"parallel"`. Forced sequential when any tool has `executionMode: "sequential"`.
+	 */
+	toolExecution?: ToolExecutionMode;
 
 	/**
 	 * Called after zod validation, before `tool.execute`.

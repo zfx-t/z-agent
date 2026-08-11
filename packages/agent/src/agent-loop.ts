@@ -95,7 +95,8 @@ export async function runAgentLoopContinue(
 /**
  * Shared double-while control flow.
  *
- * When the assistant requests tools: prepare → execute → after (sequential).
+ * When the assistant requests tools: prepare → execute → after
+ * (parallel three-phase by default; sequential when configured or forced).
  * hasMoreToolCalls stays true unless every finalized result sets terminate:true.
  */
 export async function runLoop(
@@ -150,7 +151,7 @@ export async function runLoop(
 				const batch =
 					message.stopReason === "length"
 						? await failToolCallsFromTruncatedMessage(toolCalls, emit)
-						: await executeToolCallsSequential(currentContext, message, toolCalls, config, signal, emit);
+						: await executeToolCalls(currentContext, message, toolCalls, config, signal, emit);
 				toolResults.push(...batch.messages);
 				hasMoreToolCalls = !batch.terminate;
 
@@ -174,7 +175,7 @@ export async function runLoop(
 }
 
 // ---------------------------------------------------------------------------
-// Sequential tool pipeline (prepare → execute → after)
+// Tool pipeline (prepare → execute → after; sequential or parallel three-phase)
 // ---------------------------------------------------------------------------
 
 type ExecutedToolCallBatch = {
@@ -206,6 +207,9 @@ type FinalizedToolCallOutcome = {
 	isError: boolean;
 };
 
+/** Immediate outcome or deferred execute+finalize thunk (parallel path). */
+type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
+
 /**
  * Fail all tool calls when stopReason is "length" (token limit mid-stream).
  * Arguments may validate but be incomplete — never execute.
@@ -235,6 +239,28 @@ async function failToolCallsFromTruncatedMessage(
 		messages.push(toolResultMessage);
 	}
 	return { messages, terminate: false };
+}
+
+/**
+ * Dispatch sequential vs parallel tool execution.
+ * Sequential when config.toolExecution === "sequential" or any tool has executionMode sequential.
+ * Default (undefined toolExecution) is parallel, matching pi.
+ */
+async function executeToolCalls(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const hasSequentialToolCall = toolCalls.some(
+		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
+	);
+	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
+		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	}
+	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
 }
 
 /**
@@ -293,6 +319,82 @@ async function executeToolCallsSequential(
 	return {
 		messages,
 		terminate: shouldTerminateToolBatch(finalizedCalls),
+	};
+}
+
+/**
+ * Parallel three-phase (pi executeToolCallsParallel):
+ * 1. Prepare all sequentially (tool_execution_start + prepare; immediate ends emit now)
+ * 2. Execute allowed concurrently (Promise.all of deferred thunks)
+ * 3. tool_execution_end in completion order (emitted inside each thunk as it settles);
+ *    toolResult message artifacts in assistant source order after all settle
+ */
+async function executeToolCallsParallel(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const finalizedCalls: FinalizedToolCallEntry[] = [];
+
+	for (const toolCall of toolCalls) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+
+		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
+		if (preparation.kind === "immediate") {
+			const finalized = {
+				toolCall,
+				result: preparation.result,
+				isError: preparation.isError,
+			} satisfies FinalizedToolCallOutcome;
+			await emitToolExecutionEnd(finalized, emit);
+			finalizedCalls.push(finalized);
+			if (signal?.aborted) {
+				break;
+			}
+			continue;
+		}
+
+		finalizedCalls.push(async () => {
+			const executed = await executePreparedToolCall(preparation, signal, emit);
+			const finalized = await finalizeExecutedToolCall(
+				currentContext,
+				assistantMessage,
+				preparation,
+				executed,
+				config,
+				signal,
+			);
+			await emitToolExecutionEnd(finalized, emit);
+			return finalized;
+		});
+		if (signal?.aborted) {
+			break;
+		}
+	}
+
+	// Concurrent execute: ends fire in completion order as each thunk settles.
+	// Promise.all result array preserves source order for toolResult emission.
+	const orderedFinalizedCalls = await Promise.all(
+		finalizedCalls.map((entry) => (typeof entry === "function" ? entry() : Promise.resolve(entry))),
+	);
+	const messages: ToolResultMessage[] = [];
+	for (const finalized of orderedFinalizedCalls) {
+		const toolResultMessage = createToolResultMessage(finalized);
+		await emitToolResultMessage(toolResultMessage, emit);
+		messages.push(toolResultMessage);
+	}
+
+	return {
+		messages,
+		terminate: shouldTerminateToolBatch(orderedFinalizedCalls),
 	};
 }
 

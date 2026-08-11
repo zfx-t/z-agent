@@ -609,7 +609,8 @@ describe("sequential tools (prepare → execute → after)", () => {
 		await runAgentLoop(
 			[user("order")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: faux.model, convertToLlm: identityConvert },
+			// Sequential: end and toolResult message pair are adjacent per call
+			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "sequential" },
 			collector.sink,
 			undefined,
 			faux.streamFn,
@@ -623,6 +624,313 @@ describe("sequential tools (prepare → execute → after)", () => {
 		expect(endIdx).toBeGreaterThan(startIdx);
 		expect(types[endIdx + 1]).toBe("message_start");
 		expect(types[endIdx + 2]).toBe("message_end");
+	});
+
+	it("runs tools sequentially when toolExecution is sequential", async () => {
+		const schema = z.object({ value: z.string() });
+		let firstResolved = false;
+		let parallelObserved = false;
+		let releaseFirst: (() => void) | undefined;
+		const firstDone = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
+			async execute(_id, params) {
+				if (params.value === "first") {
+					await firstDone;
+					firstResolved = true;
+				}
+				if (params.value === "second" && !firstResolved) {
+					parallelObserved = true;
+				}
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const collector = createAgentEventCollector();
+
+		const runPromise = runAgentLoop(
+			[user("seq")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "sequential" },
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+		// Release the first tool after a short delay so a parallel path would race
+		setTimeout(() => releaseFirst?.(), 20);
+		await runPromise;
+
+		expect(parallelObserved).toBe(false);
+		const toolResultIds = collector.events.flatMap((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") return [];
+			return [event.message.toolCallId];
+		});
+		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
+	});
+});
+
+describe("parallel three-phase tools", () => {
+	const schema = z.object({ value: z.string() });
+
+	it("emits tool_execution_end in completion order but toolResults in source order", async () => {
+		let firstResolved = false;
+		let parallelObserved = false;
+		let releaseFirst: (() => void) | undefined;
+		const firstDone = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
+			async execute(_id, params) {
+				if (params.value === "first") {
+					await firstDone;
+					firstResolved = true;
+				}
+				if (params.value === "second" && !firstResolved) {
+					parallelObserved = true;
+				}
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const collector = createAgentEventCollector();
+
+		const runPromise = runAgentLoop(
+			[user("parallel")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			// default toolExecution is parallel; set explicitly for clarity
+			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+		setTimeout(() => releaseFirst?.(), 20);
+		const newMessages = await runPromise;
+
+		expect(parallelObserved).toBe(true);
+
+		const toolExecutionEndIds = collector.events.flatMap((event) => {
+			if (event.type !== "tool_execution_end") return [];
+			return [event.toolCallId];
+		});
+		const toolResultIds = collector.events.flatMap((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") return [];
+			return [event.message.toolCallId];
+		});
+		const turnToolResultIds = collector.events.flatMap((event) => {
+			if (event.type !== "turn_end") return [];
+			return event.toolResults.map((tr) => tr.toolCallId);
+		});
+
+		// Second finishes first (no wait); first after release → completion order ends
+		expect(toolExecutionEndIds).toEqual(["tool-2", "tool-1"]);
+		// Artifact messages and transcript stay assistant source order
+		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
+		expect(turnToolResultIds).toEqual(["tool-1", "tool-2"]);
+		expect(
+			newMessages.filter((m) => m.role === "toolResult").map((m) => (m.role === "toolResult" ? m.toolCallId : "")),
+		).toEqual(["tool-1", "tool-2"]);
+	});
+
+	it("defaults to parallel when toolExecution is omitted", async () => {
+		let firstResolved = false;
+		let parallelObserved = false;
+		let releaseFirst: (() => void) | undefined;
+		const firstDone = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
+			async execute(_id, params) {
+				if (params.value === "first") {
+					await firstDone;
+					firstResolved = true;
+				}
+				if (params.value === "second" && !firstResolved) {
+					parallelObserved = true;
+				}
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+		});
+
+		const runPromise = runAgentLoop(
+			[user("default parallel")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: faux.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			faux.streamFn,
+		);
+		setTimeout(() => releaseFirst?.(), 20);
+		await runPromise;
+
+		expect(parallelObserved).toBe(true);
+	});
+
+	it("forces sequential when any tool has executionMode sequential", async () => {
+		let firstResolved = false;
+		let parallelObserved = false;
+		let releaseFirst: (() => void) | undefined;
+		const firstDone = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const slowTool: AgentTool<typeof schema, { value: string }> = {
+			name: "slow",
+			label: "Slow",
+			description: "Slow",
+			parameters: schema,
+			executionMode: "sequential",
+			async execute(_id, params) {
+				if (params.value === "first") {
+					await firstDone;
+					firstResolved = true;
+				}
+				if (params.value === "second" && !firstResolved) {
+					parallelObserved = true;
+				}
+				return {
+					content: [{ type: "text", text: `slow: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[
+						fauxToolCall("slow", { value: "first" }, { id: "tool-1" }),
+						fauxToolCall("slow", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const collector = createAgentEventCollector();
+
+		const runPromise = runAgentLoop(
+			[user("force seq")],
+			{ systemPrompt: "", messages: [], tools: [slowTool] },
+			// parallel config, but tool forces sequential
+			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+		setTimeout(() => releaseFirst?.(), 20);
+		await runPromise;
+
+		expect(parallelObserved).toBe(false);
+		const toolResultIds = collector.events.flatMap((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") return [];
+			return [event.message.toolCallId];
+		});
+		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
+	});
+
+	it("emits all tool_execution_end before any toolResult messages in parallel mode", async () => {
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const faux = createFauxStream({
+			responses: [
+				fauxAssistantMessage(
+					[fauxToolCall("echo", { value: "a" }, { id: "a" }), fauxToolCall("echo", { value: "b" }, { id: "b" })],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		await runAgentLoop(
+			[user("phase3")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			collector.sink,
+			undefined,
+			faux.streamFn,
+		);
+
+		const relevant = collector.events.filter((e) => e.type !== "message_update");
+		const endIndices = relevant.map((e, i) => (e.type === "tool_execution_end" ? i : -1)).filter((i) => i >= 0);
+		const firstToolResultMsg = relevant.findIndex(
+			(e) => e.type === "message_start" && e.message.role === "toolResult",
+		);
+		// Both ends before first toolResult message_start (phase 3 after concurrent execute)
+		expect(endIndices).toHaveLength(2);
+		expect(firstToolResultMsg).toBeGreaterThan(Math.max(...endIndices));
 	});
 });
 
