@@ -84,6 +84,10 @@ Also available: `streamOpenAIResponses(model, context, options?, config?)`.
 
 Minimal subset: **text** + **function tool calls**. Unit tests mock `fetch` (no live network).
 
+**Tool results on the wire:** Responses `function_call_output` is content-only. When
+`toolResult.isError` is true, the adapter prefixes the output string with `Error: `
+(unless already present).
+
 ## StreamFn contract
 
 ```ts

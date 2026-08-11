@@ -220,9 +220,18 @@ function normalizeToolCallIdParts(id: string): { callId: string; itemId?: string
 
 function toolResultText(msg: Extract<Message, { role: "toolResult" }>): string {
 	const parts = msg.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text);
-	if (parts.length > 0) return parts.join("\n");
-	const hasImage = msg.content.some((c) => c.type === "image");
-	return hasImage ? "(see attached image)" : "(no tool output)";
+	let text: string;
+	if (parts.length > 0) {
+		text = parts.join("\n");
+	} else {
+		const hasImage = msg.content.some((c) => c.type === "image");
+		text = hasImage ? "(see attached image)" : "(no tool output)";
+	}
+	// Wire path has no separate is_error flag; surface agent errors in the output string.
+	if (msg.isError && !text.startsWith("Error:")) {
+		return `Error: ${text}`;
+	}
+	return text;
 }
 
 /** Convert internal Context messages to Responses `input` items. */
@@ -329,12 +338,19 @@ export function buildResponsesBody(
 	context: Context,
 	options?: OpenAIResponsesStreamOptions,
 ): ResponsesCreateBody {
+	const input = convertResponsesMessages(context);
 	const body: ResponsesCreateBody = {
 		model: model.id,
-		input: convertResponsesMessages(context),
+		input,
 		stream: true,
 		store: false,
 	};
+
+	// samplingParams may add top_p / penalties / etc. Applied before named options
+	// and before re-asserting the streaming contract fields below.
+	if (options?.samplingParams) {
+		Object.assign(body, options.samplingParams);
+	}
 
 	if (context.tools && context.tools.length > 0) {
 		body.tools = convertResponsesTools(context.tools);
@@ -348,9 +364,11 @@ export function buildResponsesBody(
 		body.temperature = options.temperature;
 	}
 
-	if (options?.samplingParams) {
-		Object.assign(body, options.samplingParams);
-	}
+	// Force critical wire fields so samplingParams cannot disable streaming or rewrite input.
+	body.model = model.id;
+	body.input = input;
+	body.stream = true;
+	body.store = false;
 
 	return body;
 }
@@ -384,6 +402,18 @@ export async function* parseResponsesSse(
 		if (!raw || raw === "[DONE]") return undefined;
 		return JSON.parse(raw) as ResponsesStreamEvent;
 	};
+
+	// Unblock a pending read() when AbortSignal fires (custom fetch may ignore body signal).
+	const onAbort = (): void => {
+		void reader.cancel().catch(() => {});
+	};
+	if (signal) {
+		if (signal.aborted) {
+			await reader.cancel().catch(() => {});
+			throw new DOMException("The operation was aborted.", "AbortError");
+		}
+		signal.addEventListener("abort", onAbort, { once: true });
+	}
 
 	try {
 		while (true) {
@@ -425,7 +455,18 @@ export async function* parseResponsesSse(
 		const last = flush();
 		if (last) yield last;
 	} finally {
-		reader.releaseLock();
+		signal?.removeEventListener("abort", onAbort);
+		// Cancel so non-abort error paths do not leave the connection draining until GC.
+		try {
+			await reader.cancel();
+		} catch {
+			// already cancelled / closed
+		}
+		try {
+			reader.releaseLock();
+		} catch {
+			// lock released by cancel()
+		}
 	}
 }
 
@@ -439,18 +480,32 @@ type OutputSlot =
 	| { kind: "text"; block: TextContent; contentIndex: number }
 	| { kind: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
-function parseToolArguments(json: string): Record<string, unknown> {
+type ParseToolArgsResult = { ok: true; args: Record<string, unknown> } | { ok: false; error: string };
+
+function parseToolArguments(json: string): ParseToolArgsResult {
 	const trimmed = json.trim();
-	if (!trimmed) return {};
+	if (!trimmed) return { ok: true, args: {} };
 	try {
 		const parsed: unknown = JSON.parse(trimmed);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
+			return { ok: true, args: parsed as Record<string, unknown> };
 		}
-		return {};
-	} catch {
-		return {};
+		const kind = Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed;
+		return { ok: false, error: `Tool call arguments must be a JSON object, got ${kind}` };
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, error: `Invalid tool call arguments JSON: ${detail}` };
 	}
+}
+
+function applyParsedToolArguments(block: StreamingToolCall, argsJson: string): string | undefined {
+	const parsed = parseToolArguments(argsJson);
+	if (parsed.ok) {
+		block.arguments = parsed.args;
+		return undefined;
+	}
+	block.arguments = {};
+	return parsed.error;
 }
 
 function mapStopReason(
@@ -510,6 +565,8 @@ async function processResponsesEvents(
 ): Promise<void> {
 	const slots = new Map<number, OutputSlot>();
 	let sawTerminal = false;
+	/** Set when function_call arguments JSON is invalid; applied after terminal mapping. */
+	let toolArgsError: string | undefined;
 
 	const createSlot = (
 		outputIndex: number,
@@ -550,8 +607,45 @@ async function processResponsesEvents(
 		return slot?.kind === kind ? (slot as Extract<OutputSlot, { kind: K }>) : undefined;
 	};
 
+	const endToolCallSlot = (slot: Extract<OutputSlot, { kind: "toolCall" }>, argsJson: string): void => {
+		const parseError = applyParsedToolArguments(slot.block, argsJson);
+		if (parseError) {
+			toolArgsError = toolArgsError ?? parseError;
+		}
+		delete slot.block.partialJson;
+		stream.push({
+			type: "toolcall_end",
+			contentIndex: slot.contentIndex,
+			toolCall: {
+				type: "toolCall",
+				id: slot.block.id,
+				name: slot.block.name,
+				arguments: slot.block.arguments,
+			},
+			partial: output,
+		});
+	};
+
+	/** Close slots that never received `output_item.done` before a terminal response event. */
+	const closeOpenSlots = (): void => {
+		for (const [outputIndex, slot] of [...slots.entries()]) {
+			if (slot.kind === "text") {
+				stream.push({
+					type: "text_end",
+					contentIndex: slot.contentIndex,
+					content: slot.block.text,
+					partial: output,
+				});
+			} else {
+				endToolCallSlot(slot, slot.block.partialJson || "{}");
+			}
+			slots.delete(outputIndex);
+		}
+	};
+
 	const finalizeResponse = (response: NonNullable<ResponsesStreamEvent["response"]>): void => {
 		sawTerminal = true;
+		closeOpenSlots();
 		if (response.id) {
 			output.responseId = response.id;
 		}
@@ -562,6 +656,12 @@ async function processResponsesEvents(
 		output.stopReason = mapped.stopReason;
 		if (mapped.errorMessage) {
 			output.errorMessage = mapped.errorMessage;
+		}
+		// Invalid tool JSON wins over toolUse so the agent does not execute empty args.
+		if (toolArgsError) {
+			output.stopReason = "error";
+			output.errorMessage = toolArgsError;
+			return;
 		}
 		if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
 			output.stopReason = "toolUse";
@@ -659,7 +759,6 @@ async function processResponsesEvents(
 					slots.delete(event.output_index);
 				} else if (item.type === "function_call" && slot?.kind === "toolCall") {
 					const argsJson = item.arguments || slot.block.partialJson || "{}";
-					slot.block.arguments = parseToolArguments(argsJson);
 					if (item.call_id && item.id) {
 						slot.block.id = `${item.call_id}|${item.id}`;
 					} else if (item.call_id) {
@@ -668,18 +767,7 @@ async function processResponsesEvents(
 					if (item.name) {
 						slot.block.name = item.name;
 					}
-					delete slot.block.partialJson;
-					stream.push({
-						type: "toolcall_end",
-						contentIndex: slot.contentIndex,
-						toolCall: {
-							type: "toolCall",
-							id: slot.block.id,
-							name: slot.block.name,
-							arguments: slot.block.arguments,
-						},
-						partial: output,
-					});
+					endToolCallSlot(slot, argsJson);
 					slots.delete(event.output_index);
 				}
 				break;
@@ -693,6 +781,7 @@ async function processResponsesEvents(
 			}
 			case "response.failed": {
 				sawTerminal = true;
+				closeOpenSlots();
 				const err = event.response?.error;
 				const details = event.response?.incomplete_details;
 				const msg = err
@@ -717,6 +806,12 @@ async function processResponsesEvents(
 
 	if (!sawTerminal) {
 		throw new Error("OpenAI Responses stream ended before a terminal response event");
+	}
+
+	// Safety net if tool args failed but finalizeResponse was not reached with that path.
+	if (toolArgsError && output.stopReason !== "error" && output.stopReason !== "aborted") {
+		output.stopReason = "error";
+		output.errorMessage = toolArgsError;
 	}
 }
 

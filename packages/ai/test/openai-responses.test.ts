@@ -199,6 +199,26 @@ describe("convertResponsesMessages / tools", () => {
 		});
 	});
 
+	it("prefixes toolResult output when isError is true", () => {
+		const input = convertResponsesMessages({
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "echo",
+					content: [{ type: "text", text: "boom" }],
+					isError: true,
+					timestamp: 1,
+				},
+			],
+		});
+		expect(input[0]).toEqual({
+			type: "function_call_output",
+			call_id: "call_1",
+			output: "Error: boom",
+		});
+	});
+
 	it("convertResponsesTools maps function tools", () => {
 		expect(
 			convertResponsesTools([
@@ -235,6 +255,27 @@ describe("convertResponsesMessages / tools", () => {
 		expect(body.temperature).toBe(0.2);
 		expect(body.top_p).toBe(0.9);
 		expect(body.tools?.[0]?.name).toBe("a");
+	});
+
+	it("buildResponsesBody does not let samplingParams clobber stream/store/model/input", () => {
+		const body = buildResponsesBody(
+			model,
+			{ messages: [{ role: "user", content: "x", timestamp: 1 }] },
+			{
+				samplingParams: {
+					stream: false,
+					store: true,
+					model: "hijacked",
+					input: [{ role: "user", content: "nope" }],
+					top_p: 0.1,
+				},
+			},
+		);
+		expect(body.stream).toBe(true);
+		expect(body.store).toBe(false);
+		expect(body.model).toBe("gpt-test");
+		expect(body.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "x" }] }]);
+		expect(body.top_p).toBe(0.1);
 	});
 });
 
@@ -370,7 +411,7 @@ describe("streamOpenAIResponses", () => {
 		expect(final.errorMessage).toMatch(/API key/i);
 	});
 
-	it("honors AbortSignal before and during stream", async () => {
+	it("honors already-aborted AbortSignal", async () => {
 		const ac = new AbortController();
 		ac.abort();
 		const stream = streamOpenAIResponses(
@@ -382,6 +423,186 @@ describe("streamOpenAIResponses", () => {
 		const final = await stream.result();
 		expect(final.stopReason).toBe("aborted");
 		expect(final.errorMessage).toMatch(/abort/i);
+	});
+
+	it("aborts mid-stream after text_delta and retains partial content", async () => {
+		const ac = new AbortController();
+		const encoder = new TextEncoder();
+		const sseChunks = [
+			`data: ${JSON.stringify({ type: "response.created", response: { id: "resp_mid", status: "in_progress" } })}\n\n`,
+			`data: ${JSON.stringify({
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "message", id: "msg_mid", status: "in_progress", content: [] },
+			})}\n\n`,
+			`data: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "Hel" })}\n\n`,
+			// Remaining chunks should not be required after abort
+			`data: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "lo world" })}\n\n`,
+			`data: ${JSON.stringify({
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "message",
+					id: "msg_mid",
+					content: [{ type: "output_text", text: "Hello world" }],
+				},
+			})}\n\n`,
+			`data: ${JSON.stringify({
+				type: "response.completed",
+				response: { id: "resp_mid", status: "completed" },
+			})}\n\n`,
+		];
+
+		let chunkIndex = 0;
+		const fetchMock: typeof fetch = async (_input, init) => {
+			const signal = init?.signal;
+			const body = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					if (signal?.aborted) {
+						controller.error(new DOMException("The operation was aborted.", "AbortError"));
+						return;
+					}
+					if (chunkIndex >= sseChunks.length) {
+						controller.close();
+						return;
+					}
+					controller.enqueue(encoder.encode(sseChunks[chunkIndex]));
+					chunkIndex += 1;
+					// Allow the consumer to observe the delta and abort between chunks.
+					await new Promise<void>((resolve) => queueMicrotask(resolve));
+				},
+			});
+			return new Response(body, {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		};
+
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk", signal: ac.signal },
+			{ fetch: fetchMock },
+		);
+
+		const types: string[] = [];
+		let lastPartialContent: unknown;
+		let aborted = false;
+		for await (const e of stream) {
+			types.push(e.type);
+			if ("partial" in e) {
+				lastPartialContent = e.partial.content;
+			}
+			if (e.type === "text_delta" && !aborted) {
+				aborted = true;
+				ac.abort();
+			}
+		}
+		const final = await stream.result();
+
+		expect(types[0]).toBe("start");
+		expect(types).toContain("text_delta");
+		expect(types.at(-1)).toBe("error");
+		expect(final.stopReason).toBe("aborted");
+		expect(final.content.length).toBeGreaterThan(0);
+		expect(final.content[0]).toMatchObject({ type: "text" });
+		if (final.content[0]?.type === "text") {
+			expect(final.content[0].text.length).toBeGreaterThan(0);
+		}
+		expect(lastPartialContent).toEqual(final.content);
+	});
+
+	it("encodes response.failed as error without throwing", async () => {
+		const sse = sseFromEvents([
+			{ type: "response.created", response: { id: "r_fail", status: "in_progress" } },
+			{
+				type: "response.failed",
+				response: {
+					id: "r_fail",
+					status: "failed",
+					error: { code: "server_error", message: "boom" },
+				},
+			},
+		]);
+		const stream = streamOpenAIResponses(model, emptyContext, { apiKey: "sk" }, { fetch: mockFetchOk(sse) });
+		const events = await collect(stream);
+		const final = await stream.result();
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("error");
+		expect(final.errorMessage).toMatch(/server_error|boom/);
+	});
+
+	it("encodes malformed SSE JSON as error without throwing", async () => {
+		const sse = "data: {not-json\n\n";
+		const stream = streamOpenAIResponses(model, emptyContext, { apiKey: "sk" }, { fetch: mockFetchOk(sse) });
+		const events = await collect(stream);
+		const final = await stream.result();
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("error");
+		expect(final.errorMessage).toBeTruthy();
+	});
+
+	it("encodes invalid tool arguments JSON as error stopReason", async () => {
+		const sse = sseFromEvents([
+			{ type: "response.created", response: { id: "r_bad", status: "in_progress" } },
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: {
+					type: "function_call",
+					id: "fc_bad",
+					call_id: "call_bad",
+					name: "echo",
+					arguments: "",
+				},
+			},
+			{ type: "response.function_call_arguments.delta", output_index: 0, delta: "not-json{" },
+			{
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "function_call",
+					id: "fc_bad",
+					call_id: "call_bad",
+					name: "echo",
+					arguments: "not-json{",
+				},
+			},
+			{
+				type: "response.completed",
+				response: { id: "r_bad", status: "completed" },
+			},
+		]);
+		const stream = streamOpenAIResponses(model, emptyContext, { apiKey: "sk" }, { fetch: mockFetchOk(sse) });
+		const events = await collect(stream);
+		const final = await stream.result();
+		expect(events.some((e) => e.type === "toolcall_end")).toBe(true);
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("error");
+		expect(final.errorMessage).toMatch(/Invalid tool call arguments JSON/i);
+		expect(final.content[0]).toMatchObject({ type: "toolCall", name: "echo", arguments: {} });
+	});
+
+	it("finalizes open text slots when provider omits output_item.done", async () => {
+		const sse = sseFromEvents([
+			{ type: "response.created", response: { id: "r_open", status: "in_progress" } },
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "message", id: "msg_open", content: [] },
+			},
+			{ type: "response.output_text.delta", output_index: 0, delta: "partial" },
+			{
+				type: "response.completed",
+				response: { id: "r_open", status: "completed" },
+			},
+		]);
+		const stream = streamOpenAIResponses(model, emptyContext, { apiKey: "sk" }, { fetch: mockFetchOk(sse) });
+		const events = await collect(stream);
+		const final = await stream.result();
+		expect(events.some((e) => e.type === "text_end")).toBe(true);
+		expect(final.stopReason).toBe("stop");
+		expect(final.content[0]).toMatchObject({ type: "text", text: "partial" });
 	});
 
 	it("maps incomplete max_output_tokens to length", async () => {
