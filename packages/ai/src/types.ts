@@ -2,7 +2,7 @@
  * LLM protocol types for @z-agent/ai.
  *
  * Semantic shapes align with the pi oracle (Message / stream events / StreamFn)
- * without importing pi packages. Responses HTTP wire types live in a later PR.
+ * without importing pi packages. Production HTTP: OpenAI Responses (`openai-responses.ts`).
  */
 
 import type { AssistantMessageEventStream } from "./event-stream.ts";
