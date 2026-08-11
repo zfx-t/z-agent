@@ -6,9 +6,10 @@
 		"packages/*"
 	],
 	"scripts": {
-		"check": "biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit",
+		"check": "biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit",
 		"test": "vitest --run",
-		"format": "biome check --write ."
+		"format": "biome check --write .",
+		"z-agent": "node packages/cli/bin/z-agent.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.5",

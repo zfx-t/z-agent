@@ -6,11 +6,12 @@ Clean-room agent runtime and LLM protocol for a durable-capable control loop.
 |---------|------|------|
 | `packages/ai` | `@z-agent/ai` | Messages, stream events, faux provider, OpenAI **Responses API** stream |
 | `packages/agent` | `@z-agent/agent` | Agent loop, tools, queues, Agent shell |
+| `packages/cli` | `@z-agent/cli` | Minimal smoke bin (`z-agent`) — faux default, optional `--live` |
 | _(later)_ | `@z-agent/harness` | L5 durable: intent / effect / settle + `op.state` |
 
 ## Status
 
-Scaffold only. Loop implementation follows the ordered plan in `AGENTS.md` and `docs/`.
+Libraries + tiny demo CLI. Loop implementation follows the ordered plan in `AGENTS.md` and `docs/`.
 
 ## Design docs
 
@@ -27,6 +28,19 @@ npm install --ignore-scripts
 npm run check
 npm test
 ```
+
+## Try the agent (smoke CLI)
+
+```bash
+# offline faux stream + echo tool (no API key)
+npm run z-agent
+npx z-agent "hello"
+
+# live OpenAI Responses
+OPENAI_API_KEY=sk-... npm run z-agent -- --live "echo hi"
+```
+
+See [`packages/cli/README.md`](packages/cli/README.md).
 
 ## Principles (short)
 
