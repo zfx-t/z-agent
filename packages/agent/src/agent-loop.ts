@@ -16,16 +16,97 @@
  */
 
 import type { AssistantMessage, StreamFn, ToolResultMessage } from "@z-agent/ai";
+import { EventStream } from "@z-agent/ai";
 import type { AgentEventSink } from "./emit.ts";
 import { streamAssistant } from "./stream-assistant.ts";
 import type {
 	AgentContext,
+	AgentEvent,
 	AgentLoopConfig,
 	AgentMessage,
 	AgentTool,
 	AgentToolCall,
 	AgentToolResult,
 } from "./types.ts";
+
+function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
+	return new EventStream<AgentEvent, AgentMessage[]>(
+		(event: AgentEvent) => event.type === "agent_end",
+		(event: AgentEvent) => (event.type === "agent_end" ? event.messages : []),
+	);
+}
+
+/**
+ * Start a loop with new prompt messages; events are pushed onto a returned EventStream.
+ * `runAgentLoop` remains the async implementation. Wrapper catches rejection so
+ * {@link EventStream.result} does not hang (ADR-0015 fork vs pi's uncaught `.then`).
+ */
+export function agentLoop(
+	prompts: AgentMessage[],
+	context: AgentContext,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	streamFn: StreamFn,
+): EventStream<AgentEvent, AgentMessage[]> {
+	const stream = createAgentStream();
+	void runAgentLoop(
+		prompts,
+		context,
+		config,
+		async (event) => {
+			stream.push(event);
+		},
+		signal,
+		streamFn,
+	).then(
+		(messages) => {
+			stream.end(messages);
+		},
+		() => {
+			stream.end();
+		},
+	);
+	return stream;
+}
+
+/**
+ * Continue a loop from the current context; events are pushed onto a returned EventStream.
+ * Last message must not be an assistant (validated here, matching runAgentLoopContinue).
+ */
+export function agentLoopContinue(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	streamFn: StreamFn,
+): EventStream<AgentEvent, AgentMessage[]> {
+	if (context.messages.length === 0) {
+		throw new Error("Cannot continue: no messages in context");
+	}
+
+	const last = context.messages[context.messages.length - 1];
+	if (last && isAssistantRole(last)) {
+		throw new Error("Cannot continue from message role: assistant");
+	}
+
+	const stream = createAgentStream();
+	void runAgentLoopContinue(
+		context,
+		config,
+		async (event) => {
+			stream.push(event);
+		},
+		signal,
+		streamFn,
+	).then(
+		(messages) => {
+			stream.end(messages);
+		},
+		() => {
+			stream.end();
+		},
+	);
+	return stream;
+}
 
 /**
  * Start a loop with new prompt messages.
@@ -109,12 +190,13 @@ export async function runAgentLoopContinue(
 export async function runLoop(
 	initialContext: AgentContext,
 	newMessages: AgentMessage[],
-	config: AgentLoopConfig,
+	initialConfig: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFn: StreamFn,
 ): Promise<void> {
-	const currentContext = initialContext;
+	let currentContext = initialContext;
+	let config = initialConfig;
 	let firstTurn = true;
 	// Steering may already be queued when the run starts (user typed while waiting).
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) ?? [];
@@ -171,6 +253,39 @@ export async function runLoop(
 			}
 
 			await emit({ type: "turn_end", message, toolResults });
+
+			const nextTurnContext = {
+				message,
+				toolResults,
+				context: currentContext,
+				newMessages,
+			};
+			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+			if (nextTurnSnapshot) {
+				currentContext = nextTurnSnapshot.context ?? currentContext;
+				config = {
+					...config,
+					model: nextTurnSnapshot.model ?? config.model,
+					reasoning:
+						nextTurnSnapshot.thinkingLevel === undefined
+							? config.reasoning
+							: nextTurnSnapshot.thinkingLevel === "off"
+								? undefined
+								: nextTurnSnapshot.thinkingLevel,
+				};
+			}
+
+			if (
+				await config.shouldStopAfterTurn?.({
+					message,
+					toolResults,
+					context: currentContext,
+					newMessages,
+				})
+			) {
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
 
 			// Steering after turn completes (tools finished); does not skip pending tools.
 			pendingMessages = (await config.getSteeringMessages?.()) ?? [];
@@ -622,6 +737,7 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		content: finalized.result.content ?? [],
 		details: finalized.result.details,
 		usage: finalized.result.usage,
+		...(finalized.result.addedToolNames?.length ? { addedToolNames: finalized.result.addedToolNames } : {}),
 		isError: finalized.isError,
 		timestamp: Date.now(),
 	};

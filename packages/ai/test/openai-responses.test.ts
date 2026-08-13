@@ -277,6 +277,14 @@ describe("convertResponsesMessages / tools", () => {
 		expect(body.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "x" }] }]);
 		expect(body.top_p).toBe(0.1);
 	});
+
+	it("buildResponsesBody sets reasoning.effort from options.reasoning", () => {
+		const withEffort = buildResponsesBody(model, { messages: [] }, { reasoning: "low" });
+		expect(withEffort.reasoning).toEqual({ effort: "low" });
+
+		const without = buildResponsesBody(model, { messages: [] });
+		expect(without.reasoning).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------

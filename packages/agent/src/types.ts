@@ -18,6 +18,7 @@ import type {
 	StreamFn,
 	StreamOptions,
 	TextContent,
+	ThinkingLevel,
 	ToolCall,
 	ToolResultMessage,
 	Usage,
@@ -92,6 +93,8 @@ export interface AgentToolResult<TDetails = unknown> {
 	details: TDetails;
 	/** Usage from the tool execution itself, if available. Not for main LLM accounting. */
 	usage?: Usage;
+	/** Names of tools introduced by this result and available from this transcript point onward. */
+	addedToolNames?: string[];
 	/**
 	 * Hint that the agent should stop after the current tool batch.
 	 * Early termination only when every finalized result in the batch sets this true.
@@ -115,7 +118,7 @@ export type AgentToolParametersSchema = z.ZodType<unknown, z.ZodTypeDef, unknown
  * Tool definition for the agent runtime.
  *
  * `parameters` is a **zod** schema (ADR-0013). Conversion to JSON-Schema-shaped
- * {@link import("@z-agent/ai").Tool} at the LLM boundary is done by the loop later.
+ * {@link import("@z-agent/ai").Tool} happens in streamAssistant via agentToolsToLlmTools.
  *
  * **Method syntax** for `execute` / `prepareArguments` is intentional: under
  * `strictFunctionTypes`, property functions are contravariant in parameters, so a
@@ -213,6 +216,33 @@ export interface AfterToolCallContext {
 	context: AgentContext;
 }
 
+/** Context passed to `shouldStopAfterTurn`. */
+export interface ShouldStopAfterTurnContext {
+	/** The assistant message that completed the turn. */
+	message: AssistantMessage;
+	/** Tool result messages passed to the preceding `turn_end` event. */
+	toolResults: ToolResultMessage[];
+	/** Current agent context after the turn's assistant message and tool results have been appended. */
+	context: AgentContext;
+	/**
+	 * Messages this loop invocation will return if it exits here.
+	 * Prompt runs include the initial prompts; continuations do not include pre-existing context.
+	 */
+	newMessages: AgentMessage[];
+}
+
+/** Replacement runtime state used by the agent loop before starting another provider request. */
+export interface AgentLoopTurnUpdate {
+	/** Context for the next provider request. */
+	context?: AgentContext;
+	/** Model for the next provider request. */
+	model?: Model;
+	/** Thinking level for the next provider request. */
+	thinkingLevel?: ThinkingLevel;
+}
+
+export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -242,6 +272,8 @@ export interface AgentState {
 	systemPrompt: string;
 	/** Active model used for future turns. */
 	model: Model;
+	/** Requested reasoning level for future turns. */
+	thinkingLevel: ThinkingLevel;
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool[]);
 	get tools(): AgentTool[];
@@ -281,6 +313,9 @@ export interface AgentState {
 export interface AgentLoopConfig {
 	/** Model used for the next provider request. */
 	model: Model;
+
+	/** Reasoning effort forwarded to StreamFn. Omit (or leave unset) for `"off"`. */
+	reasoning?: StreamOptions["reasoning"];
 
 	/**
 	 * Converts AgentMessage[] → LLM Message[] before each provider call.
@@ -330,6 +365,22 @@ export interface AgentLoopConfig {
 	 * Contract: must not throw (throws become error toolResults); honor `signal`.
 	 */
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+
+	/**
+	 * Called after each turn fully completes and `turn_end` has been emitted.
+	 *
+	 * If it returns true, the loop emits `agent_end` and exits before polling steering
+	 * or follow-up queues. Contract: must not throw or reject.
+	 */
+	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
+
+	/**
+	 * Called after `turn_end` and before `shouldStopAfterTurn`.
+	 * Return replacement context/model/thinking state for later turns in this run.
+	 */
+	prepareNextTurn?: (
+		context: PrepareNextTurnContext,
+	) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
 
 	/**
 	 * Returns steering messages to inject mid-run.
@@ -421,6 +472,7 @@ export type {
 	Model,
 	StreamOptions,
 	TextContent,
+	ThinkingLevel,
 	ToolCall,
 	ToolResultMessage,
 	Usage,

@@ -74,10 +74,26 @@ Durable total program counter for the in-flight operation. L5 only. (ADR-0010)
 
 pi `packages/agent` agent-loop / Agent behavior used as the correctness reference without importing pi packages. Deviations require an ADR. (ADR-0001, ADR-0008)
 
-## Faux provider
-
-In-process `StreamFn` that yields scripted assistant events for tests. No network. (ADR-0004)
-
 ## Responses API path
 
 The single production HTTP stream implementation in `@z-agent/ai`: OpenAI Responses API streaming. (ADR-0005)
+
+## StreamFn (injection)
+
+Production uses Responses-backed `StreamFn`. Unit tests inject a private scripted `StreamFn` under `packages/agent/test/helpers/` — not a public package API.
+
+## prepareNextTurn
+
+Called after `turn_end` and before `shouldStopAfterTurn`. May replace context, model, or thinkingLevel for later provider calls in the same run. Does not write back to `Agent.state.thinkingLevel`. (ADR-0015)
+
+## shouldStopAfterTurn
+
+If true after a completed turn, emit `agent_end` and skip steering/follow-up polls (the loop-start steering poll still happens). (ADR-0015)
+
+## thinkingLevel
+
+`AgentState` reasoning request: `"off"` | `"minimal"` | `"low"` | `"medium"` | `"high"` | `"xhigh"` | `"max"`. `"off"` omits `StreamOptions.reasoning`. Not `thinkingBudgets`. (ADR-0015)
+
+## agentLoop / agentLoopContinue
+
+EventStream wrappers around `runAgentLoop` / `runAgentLoopContinue`. Completing event is `agent_end`. Wrapper catches rejection so `result()` does not hang. (ADR-0015)

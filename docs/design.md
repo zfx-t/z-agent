@@ -18,7 +18,7 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 ## Architecture (summary)
 
 ```
-@z-agent/ai          Message, stream events, StreamFn, faux, Responses HTTP
+@z-agent/ai          Message, stream events, StreamFn, Responses HTTP
 @z-agent/agent       AgentMessage, emit, runLoop, tools, Agent shell, queues
 @z-agent/harness     (later) intent / effect / settle + op.state
 ```
@@ -35,14 +35,14 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - Exact-version pins; `npm install --ignore-scripts`
 - After code changes: `npm run check` and run added/changed tests
 - Do not import pi packages; may **read** pi source under `/home/zeroth/ForMe/pi` as oracle
-- Tests use faux stream; no real network in unit tests
+- Agent unit tests inject a private scripted StreamFn; no real network
 - Default queue modes and toolExecution follow pi (`one-at-a-time`, `parallel`) unless noted
 
 ## PR Plan
 
-### PR 1: AI protocol core + faux stream
+### PR 1: AI protocol core
 
-- **Description:** Implement `@z-agent/ai` foundation: LLM Message / AssistantMessage content blocks, stop reasons, usage skeleton, assistant stream event types, `EventStream` (or equivalent async iterable push stream), `StreamFn` contract, minimal `Model` type, and a **faux** scripted provider for tests. Export from package index. Keep Responses HTTP for PR 8.
+- **Description:** Implement `@z-agent/ai` foundation: LLM Message / AssistantMessage content blocks, stop reasons, usage skeleton, assistant stream event types, `EventStream` (or equivalent async iterable push stream), `StreamFn` contract, minimal `Model` type, Export from package index. Keep Responses HTTP for PR 8. Tests inject StreamFn outside the public package.
 - **Files/components affected:** packages/ai/src/**, packages/ai/test/**, packages/ai/README.md
 - **Dependencies:** None
 
@@ -54,7 +54,7 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 
 ### PR 3: streamAssistant + runLoop (tools-only inner)
 
-- **Description:** Implement `streamAssistant` (partial assistant message lives in context array; emit message_start / message_update / message_end) and `runLoop` double-while with **inner loop driven only by tool calls** (no steering/follow-up yet). Outer loop structure present but follow-up drain empty. Wire `agent_start` / `turn_start` / `turn_end` / `agent_end`. Inject `convertToLlm` and optional `transformContext`. Tests with faux stream for text-only multi-turn stop.
+- **Description:** Implement `streamAssistant` (partial assistant message lives in context array; emit message_start / message_update / message_end) and `runLoop` double-while with **inner loop driven only by tool calls** (no steering/follow-up yet). Outer loop structure present but follow-up drain empty. Wire `agent_start` / `turn_start` / `turn_end` / `agent_end`. Inject `convertToLlm` and optional `transformContext`. Tests with injected scripted StreamFn for text-only multi-turn stop.
 - **Files/components affected:** packages/agent/src/agent-loop.ts, packages/agent/src/stream-assistant.ts (or equivalent), packages/agent/test/**
 - **Dependencies:** PR 2
 
@@ -88,9 +88,15 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - **Files/components affected:** packages/ai/src/**, packages/ai/test/**, packages/ai/README.md
 - **Dependencies:** PR 1
 
+### PR 9: In-memory oracle gap-fill (ADR-0015)
+
+- **Description:** Convert zod `AgentTool` → JSON Schema `Tool` and pass tools from `streamAssistant`. Add `prepareNextTurn` / `shouldStopAfterTurn` after `turn_end` (pi order). `thinkingLevel` on AgentState mapped to `StreamOptions.reasoning`; Responses request may set `reasoning.effort`. `addedToolNames` passthrough. `agentLoop` / `agentLoopContinue` EventStream wrappers. Not L5, not thinking SSE replay, not thinkingBudgets.
+- **Files/components affected:** packages/agent/src/**, packages/agent/test/**, packages/ai/src/types.ts, packages/ai/src/openai-responses.ts, docs/**
+- **Dependencies:** PR 7, PR 8
+
 ## Success criteria
 
 - `npm run check` and `npm test` green on the assembled stack tip
-- Faux-driven agent tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch
+- Agent unit tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch, prepareNextTurn, shouldStopAfterTurn, tools on StreamFn Context
 - No `@earendil-works/*` in package.json or imports
 - Effect boundaries documented in code comments near streamAssistant and tool.execute

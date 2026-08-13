@@ -1,32 +1,26 @@
 # @z-agent/cli
 
-Minimal smoke CLI that wires `@z-agent/agent` + `@z-agent/ai`. Demo only — not a product shell.
+Minimal smoke bin wiring `@z-agent/agent` + `@z-agent/ai` (OpenAI Responses).
 
 ## Run
 
-From monorepo root (after `npm install --ignore-scripts`):
-
 ```bash
-# offline faux (default — no API key)
-npx z-agent
+# from monorepo root
+export OPENAI_API_KEY=sk-...
+# optional: export OPENAI_BASE_URL=https://api.openai.com/v1
+
+npm run z-agent
 npx z-agent "use the echo tool"
-
-# or via package script
-npm run z-agent -- "hello"
-
-# live OpenAI Responses (requires key)
-OPENAI_API_KEY=sk-... npx z-agent --live "echo hi"
 ```
 
-Bin entry: `z-agent` → `packages/cli/bin/z-agent.mjs`.
+## Env
 
-**Node ≥22.6.0** required (`--experimental-strip-types` for monorepo source `.ts` exports). Smoke bin only — no library `exports` surface.
+| Variable | Required | Notes |
+|----------|----------|--------|
+| `OPENAI_API_KEY` | yes | Responses API key |
+| `OPENAI_BASE_URL` | no | API base URL |
 
-## Behavior
+## Notes
 
-| Mode | When | Stream |
-|------|------|--------|
-| faux | default | scripted tool call (`echo`) + final text |
-| live | `--live` + `OPENAI_API_KEY` | `createOpenAIResponsesStream` |
-
-Prints lifecycle lines: `agent_start`, tool start/end, assistant text, `agent_end`.
+- One demo tool: `echo` (zod + real execute)
+- No offline mock path — always hits the Responses stream

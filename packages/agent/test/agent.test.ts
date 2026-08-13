@@ -1,7 +1,12 @@
-import { createFauxStream, fauxAssistantMessage, fauxText, fauxToolCall } from "@z-agent/ai";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Agent, type AgentEvent, type AgentTool } from "../src/index.ts";
+import {
+	createScriptedStream,
+	scriptedAssistantMessage,
+	scriptedText,
+	scriptedToolCall,
+} from "./helpers/scripted-stream.ts";
 
 function createDeferred(): {
 	promise: Promise<void>;
@@ -16,26 +21,38 @@ function createDeferred(): {
 
 describe("Agent shell", () => {
 	it("creates default state", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 
 		expect(agent.state.systemPrompt).toBe("");
-		expect(agent.state.model).toBe(faux.model);
+		expect(agent.state.model).toBe(scripted.model);
 		expect(agent.state.tools).toEqual([]);
 		expect(agent.state.messages).toEqual([]);
 		expect(agent.state.isStreaming).toBe(false);
 		expect(agent.state.streamingMessage).toBeUndefined();
 		expect(agent.state.pendingToolCalls).toEqual(new Set());
 		expect(agent.state.errorMessage).toBeUndefined();
+		expect(agent.state.thinkingLevel).toBe("off");
+	});
+
+	it("accepts initial thinkingLevel and allows assignment", () => {
+		const scripted = createScriptedStream();
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, thinkingLevel: "low" },
+		});
+		expect(agent.state.thinkingLevel).toBe("low");
+		agent.state.thinkingLevel = "high";
+		expect(agent.state.thinkingLevel).toBe("high");
 	});
 
 	it("subscribe receives lifecycle events for a text turn", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("Hi there!")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("Hi there!")],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, systemPrompt: "sys" },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, systemPrompt: "sys" },
 		});
 
 		const types: AgentEvent["type"][] = [];
@@ -67,7 +84,7 @@ describe("Agent shell", () => {
 		expect(agent.state.messages[0]?.role).toBe("user");
 		expect(agent.state.messages[1]?.role).toBe("assistant");
 		if (agent.state.messages[1]?.role === "assistant") {
-			expect(agent.state.messages[1].content).toEqual([fauxText("Hi there!")]);
+			expect(agent.state.messages[1].content).toEqual([scriptedText("Hi there!")]);
 			expect(agent.state.messages[1].stopReason).toBe("stop");
 		}
 		expect(agent.state.isStreaming).toBe(false);
@@ -81,12 +98,12 @@ describe("Agent shell", () => {
 	});
 
 	it("prompt(string) builds a user message and completes a text turn", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("pong")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("pong")],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 
 		await agent.prompt("ping");
@@ -100,14 +117,14 @@ describe("Agent shell", () => {
 		const assistant = agent.state.messages[1];
 		expect(assistant?.role).toBe("assistant");
 		if (assistant?.role === "assistant") {
-			expect(assistant.content).toEqual([fauxText("pong")]);
+			expect(assistant.content).toEqual([scriptedText("pong")]);
 		}
 	});
 
 	it("throws when prompt() is called while streaming (mutex)", async () => {
 		const streamStarted = createDeferred();
 		const release = createDeferred();
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				async (_ctx, options) => {
 					streamStarted.resolve();
@@ -122,16 +139,16 @@ describe("Agent shell", () => {
 						}),
 					]);
 					if (options?.signal?.aborted) {
-						return fauxAssistantMessage("aborted", { stopReason: "aborted", errorMessage: "aborted" });
+						return scriptedAssistantMessage("aborted", { stopReason: "aborted", errorMessage: "aborted" });
 					}
-					return fauxAssistantMessage("done");
+					return scriptedAssistantMessage("done");
 				},
 			],
 			chunkChars: 1,
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 
 		const first = agent.prompt("first");
@@ -150,7 +167,7 @@ describe("Agent shell", () => {
 	it("throws when continue() is called while streaming (mutex)", async () => {
 		const streamStarted = createDeferred();
 		const release = createDeferred();
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				async (_ctx, options) => {
 					streamStarted.resolve();
@@ -161,15 +178,15 @@ describe("Agent shell", () => {
 						}),
 					]);
 					if (options?.signal?.aborted) {
-						return fauxAssistantMessage("aborted", { stopReason: "aborted", errorMessage: "aborted" });
+						return scriptedAssistantMessage("aborted", { stopReason: "aborted", errorMessage: "aborted" });
 					}
-					return fauxAssistantMessage("done");
+					return scriptedAssistantMessage("done");
 				},
 			],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 
 		const first = agent.prompt("first");
@@ -184,13 +201,13 @@ describe("Agent shell", () => {
 	});
 
 	it("abort() mid-stream ends with aborted assistant and clears isStreaming", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("abcdefghijklmnopqrstuvwxyz")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("abcdefghijklmnopqrstuvwxyz")],
 			chunkChars: 1,
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 
 		let abortedSignal = false;
@@ -213,8 +230,8 @@ describe("Agent shell", () => {
 	});
 
 	it("abort() with no active run is a no-op", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 		expect(() => agent.abort()).not.toThrow();
 	});
 
@@ -234,20 +251,20 @@ describe("Agent shell", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { text: "hi" }, { id: "c1" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { text: "hi" }, { id: "c1" })], {
 					stopReason: "toolUse",
 				}),
 				// Used by continue() after tools finished with terminate
-				fauxAssistantMessage("after tools"),
+				scriptedAssistantMessage("after tools"),
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
+			streamFn: scripted.streamFn,
 			initialState: {
-				model: faux.model,
+				model: scripted.model,
 				tools: [tool],
 			},
 		});
@@ -266,27 +283,27 @@ describe("Agent shell", () => {
 		const last = agent.state.messages[agent.state.messages.length - 1];
 		expect(last?.role).toBe("assistant");
 		if (last?.role === "assistant") {
-			expect(last.content).toEqual([fauxText("after tools")]);
+			expect(last.content).toEqual([scriptedText("after tools")]);
 		}
 	});
 
 	it("continue() throws when last message is assistant", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("done")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("done")],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 		await agent.prompt("hi");
 		await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
 	});
 
 	it("continue() throws when transcript is empty", async () => {
-		const faux = createFauxStream();
+		const scripted = createScriptedStream();
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 		await expect(agent.continue()).rejects.toThrow("No messages to continue from");
 	});
@@ -312,17 +329,17 @@ describe("Agent shell", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("slow", {}, { id: "t1" })], {
+				scriptedAssistantMessage([scriptedToolCall("slow", {}, { id: "t1" })], {
 					stopReason: "toolUse",
 				}),
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, tools: [tool] },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
 		});
 
 		agent.subscribe((event) => {
@@ -359,17 +376,17 @@ describe("Agent shell", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("t", { n: 1 }, { id: "x" })], {
+				scriptedAssistantMessage([scriptedToolCall("t", { n: 1 }, { id: "x" })], {
 					stopReason: "toolUse",
 				}),
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, tools: [tool] },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
 			transformContext: async (messages) => {
 				order.push("transform");
 				return messages;
@@ -407,8 +424,8 @@ describe("Agent shell", () => {
 	});
 
 	it("state.tools and state.messages assignments copy arrays", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 		const tools: AgentTool[] = [];
 		agent.state.tools = tools;
 		expect(agent.state.tools).not.toBe(tools);
@@ -420,12 +437,12 @@ describe("Agent shell", () => {
 
 	it("waitForIdle waits for async agent_end listeners", async () => {
 		const barrier = createDeferred();
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("ok")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("ok")],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 		});
 
 		let listenerDone = false;
@@ -449,8 +466,8 @@ describe("Agent shell", () => {
 	});
 
 	it("queues steer/followUp without adding to transcript until drain", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 
 		const steerMsg = { role: "user" as const, content: "steer", timestamp: 1 };
 		const followMsg = { role: "user" as const, content: "follow", timestamp: 2 };
@@ -486,11 +503,11 @@ describe("Agent shell", () => {
 
 		let llmCalls = 0;
 		const contexts: string[][] = [];
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage([fauxToolCall("slow", {}, { id: "t1" })], {
+					return scriptedAssistantMessage([scriptedToolCall("slow", {}, { id: "t1" })], {
 						stopReason: "toolUse",
 					});
 				},
@@ -506,14 +523,14 @@ describe("Agent shell", () => {
 							return m.role;
 						}),
 					);
-					return fauxAssistantMessage("after-steer");
+					return scriptedAssistantMessage("after-steer");
 				},
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, tools: [tool] },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
 		});
 
 		const run = agent.prompt("start");
@@ -556,28 +573,28 @@ describe("Agent shell", () => {
 		};
 
 		let llmCalls = 0;
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage([fauxToolCall("slow", {}, { id: "t1" })], {
+					return scriptedAssistantMessage([scriptedToolCall("slow", {}, { id: "t1" })], {
 						stopReason: "toolUse",
 					});
 				},
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage("natural-stop");
+					return scriptedAssistantMessage("natural-stop");
 				},
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage("after-follow");
+					return scriptedAssistantMessage("after-follow");
 				},
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, tools: [tool] },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
 		});
 
 		const run = agent.prompt("go");
@@ -623,16 +640,16 @@ describe("Agent shell", () => {
 					.filter((m) => m.role === "user")
 					.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))),
 			);
-			return fauxAssistantMessage(`r${llmCalls}`);
+			return scriptedAssistantMessage(`r${llmCalls}`);
 		};
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			// One response per expected LLM turn (queue is consumed FIFO).
 			responses: [reply, reply],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 			steeringMode: "one-at-a-time",
 		});
 
@@ -656,19 +673,19 @@ describe("Agent shell", () => {
 	it("all mode drains every steering message at one drain point", async () => {
 		let llmCalls = 0;
 		const seenUserCounts: number[] = [];
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				(ctx) => {
 					llmCalls++;
 					seenUserCounts.push(ctx.messages.filter((m) => m.role === "user").length);
-					return fauxAssistantMessage(`r${llmCalls}`);
+					return scriptedAssistantMessage(`r${llmCalls}`);
 				},
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
 			steeringMode: "all",
 		});
 
@@ -690,14 +707,14 @@ describe("Agent shell", () => {
 			let llmCalls = 0;
 			const reply = () => {
 				llmCalls++;
-				return fauxAssistantMessage(`o${llmCalls}`);
+				return scriptedAssistantMessage(`o${llmCalls}`);
 			};
-			const faux = createFauxStream({
+			const scripted = createScriptedStream({
 				responses: [reply, reply, reply],
 			});
 			const agent = new Agent({
-				streamFn: faux.streamFn,
-				initialState: { model: faux.model },
+				streamFn: scripted.streamFn,
+				initialState: { model: scripted.model },
 				followUpMode: "one-at-a-time",
 			});
 			agent.followUp({ role: "user", content: "f1", timestamp: 1 });
@@ -714,14 +731,14 @@ describe("Agent shell", () => {
 			const reply = (ctx: { messages: { role: string }[] }) => {
 				llmCalls++;
 				seenUsers.push(ctx.messages.filter((m) => m.role === "user").length);
-				return fauxAssistantMessage(`a${llmCalls}`);
+				return scriptedAssistantMessage(`a${llmCalls}`);
 			};
-			const faux = createFauxStream({
+			const scripted = createScriptedStream({
 				responses: [reply, reply],
 			});
 			const agent = new Agent({
-				streamFn: faux.streamFn,
-				initialState: { model: faux.model },
+				streamFn: scripted.streamFn,
+				initialState: { model: scripted.model },
 				followUpMode: "all",
 			});
 			agent.followUp({ role: "user", content: "f1", timestamp: 1 });
@@ -754,19 +771,22 @@ describe("Agent shell", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
-					[fauxToolCall("echo", { value: "a" }, { id: "a" }), fauxToolCall("echo", { value: "b" }, { id: "b" })],
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "a" }, { id: "a" }),
+						scriptedToolCall("echo", { value: "b" }, { id: "b" }),
+					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
-			initialState: { model: faux.model, tools: [tool] },
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
 			toolExecution: "sequential",
 		});
 
@@ -787,17 +807,20 @@ describe("Agent shell", () => {
 		let responseCount = 0;
 		const reply = () => {
 			responseCount++;
-			return fauxAssistantMessage(`Processed ${responseCount}`);
+			return scriptedAssistantMessage(`Processed ${responseCount}`);
 		};
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [reply, reply],
 		});
 
 		const agent = new Agent({
-			streamFn: faux.streamFn,
+			streamFn: scripted.streamFn,
 			initialState: {
-				model: faux.model,
-				messages: [{ role: "user", content: "Initial", timestamp: 1 }, fauxAssistantMessage("Initial response")],
+				model: scripted.model,
+				messages: [
+					{ role: "user", content: "Initial", timestamp: 1 },
+					scriptedAssistantMessage("Initial response"),
+				],
 			},
 		});
 
@@ -813,14 +836,17 @@ describe("Agent shell", () => {
 	});
 
 	it("continue() from assistant tail processes follow-up when no steering", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("Processed")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("Processed")],
 		});
 		const agent = new Agent({
-			streamFn: faux.streamFn,
+			streamFn: scripted.streamFn,
 			initialState: {
-				model: faux.model,
-				messages: [{ role: "user", content: "Initial", timestamp: 1 }, fauxAssistantMessage("Initial response")],
+				model: scripted.model,
+				messages: [
+					{ role: "user", content: "Initial", timestamp: 1 },
+					scriptedAssistantMessage("Initial response"),
+				],
 			},
 		});
 
@@ -835,8 +861,8 @@ describe("Agent shell", () => {
 	});
 
 	it("reset clears queues", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 		agent.steer({ role: "user", content: "s", timestamp: 1 });
 		agent.followUp({ role: "user", content: "f", timestamp: 2 });
 		agent.reset();
@@ -845,12 +871,168 @@ describe("Agent shell", () => {
 	});
 
 	it("steeringMode / followUpMode setters update drain behavior", () => {
-		const faux = createFauxStream();
-		const agent = new Agent({ streamFn: faux.streamFn, initialState: { model: faux.model } });
+		const scripted = createScriptedStream();
+		const agent = new Agent({ streamFn: scripted.streamFn, initialState: { model: scripted.model } });
 		expect(agent.steeringMode).toBe("one-at-a-time");
 		agent.steeringMode = "all";
 		expect(agent.steeringMode).toBe("all");
 		agent.followUpMode = "all";
 		expect(agent.followUpMode).toBe("all");
+	});
+
+	it("keeps legacy prepareNextTurn signal callback behavior", async () => {
+		const schema = z.object({});
+		const tool: AgentTool<typeof schema> = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop tool",
+			parameters: schema,
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+		};
+		let requestCount = 0;
+		let sawAbortSignal = false;
+		const scripted = createScriptedStream({
+			responses: [
+				() => {
+					requestCount++;
+					return scriptedAssistantMessage([scriptedToolCall("noop", {}, { id: "tool-1" })], {
+						stopReason: "toolUse",
+					});
+				},
+				() => {
+					requestCount++;
+					return scriptedAssistantMessage("done");
+				},
+			],
+		});
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
+			prepareNextTurn: async (signal) => {
+				sawAbortSignal = signal instanceof AbortSignal;
+				return undefined;
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(requestCount).toBe(2);
+		expect(sawAbortSignal).toBe(true);
+	});
+
+	it("prefers prepareNextTurnWithContext over legacy prepareNextTurn", async () => {
+		const schema = z.object({});
+		const tool: AgentTool<typeof schema> = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop tool",
+			parameters: schema,
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+		};
+		let usedWithContext = false;
+		let usedLegacy = false;
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("noop", {}, { id: "tool-1" })], { stopReason: "toolUse" }),
+				scriptedAssistantMessage("done"),
+			],
+		});
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
+			prepareNextTurn: async () => {
+				usedLegacy = true;
+				return undefined;
+			},
+			prepareNextTurnWithContext: async (context) => {
+				usedWithContext = context.message.role === "assistant";
+				return undefined;
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(usedWithContext).toBe(true);
+		expect(usedLegacy).toBe(false);
+	});
+
+	it("forwards shouldStopAfterTurn through AgentOptions", async () => {
+		const schema = z.object({});
+		const tool: AgentTool<typeof schema> = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop tool",
+			parameters: schema,
+			execute: async () => ({ content: [{ type: "text", text: "tool complete" }], details: {} }),
+		};
+		let requestCount = 0;
+		let sawAbortSignal = false;
+		let callbackContextRoles: string[] = [];
+		const scripted = createScriptedStream({
+			responses: [
+				() => {
+					requestCount++;
+					return scriptedAssistantMessage([scriptedToolCall("noop", {}, { id: "tool-1" })], {
+						stopReason: "toolUse",
+					});
+				},
+				() => {
+					requestCount++;
+					return scriptedAssistantMessage("should not run");
+				},
+			],
+		});
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model, tools: [tool] },
+			shouldStopAfterTurn: (context, signal) => {
+				sawAbortSignal = signal instanceof AbortSignal;
+				callbackContextRoles = context.context.messages.map((message) =>
+					"role" in message ? String(message.role) : "?",
+				);
+				return true;
+			},
+		});
+
+		await agent.prompt("start");
+
+		expect(requestCount).toBe(1);
+		expect(sawAbortSignal).toBe(true);
+		expect(callbackContextRoles).toEqual(["user", "assistant", "toolResult"]);
+	});
+
+	it("maps thinkingLevel off to omitted StreamFn reasoning", async () => {
+		let capturedReasoning: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("ok")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedReasoning = options?.reasoning;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+		const agent = new Agent({
+			streamFn: wrapped,
+			initialState: { model: scripted.model },
+		});
+		await agent.prompt("hi");
+		expect(agent.state.thinkingLevel).toBe("off");
+		expect(capturedReasoning).toBeUndefined();
+	});
+
+	it("forwards non-off thinkingLevel as StreamFn reasoning", async () => {
+		let capturedReasoning: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("ok")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedReasoning = options?.reasoning;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+		const agent = new Agent({
+			streamFn: wrapped,
+			initialState: { model: scripted.model, thinkingLevel: "high" },
+		});
+		await agent.prompt("hi");
+		expect(capturedReasoning).toBe("high");
 	});
 });

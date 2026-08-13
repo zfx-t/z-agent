@@ -4,7 +4,9 @@
  * Clean-room production HTTP path: POST /responses with stream:true, parse SSE,
  * normalize vendor events into AssistantMessageEventStream.
  *
- * Minimal subset: text + function tool calls (no custom tools / grammar / reasoning).
+ * Minimal subset: text + function tool calls (no custom tools / grammar).
+ * Request body may include `reasoning.effort` from StreamOptions.reasoning;
+ * thinking SSE / signature replay is out of this slice (ADR-0015).
  * Failures are encoded on the final AssistantMessage — StreamFn never throws for
  * business/request failures once invoked.
  *
@@ -362,6 +364,10 @@ export function buildResponsesBody(
 
 	if (options?.temperature !== undefined) {
 		body.temperature = options.temperature;
+	}
+
+	if (options?.reasoning) {
+		body.reasoning = { effort: options.reasoning };
 	}
 
 	// Force critical wire fields so samplingParams cannot disable streaming or rewrite input.

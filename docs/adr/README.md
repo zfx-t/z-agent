@@ -16,6 +16,7 @@
 | [0012](0012-source-exports.md) | TypeScript source exports | Accepted |
 | [0013](0013-zod-tools.md) | zod for tool schemas | Accepted |
 | [0014](0014-license-privacy.md) | MIT, private packages | Accepted |
+| [0015](0015-post-v0-in-memory-surface.md) | Post-v0 in-memory oracle surface | Accepted |
 
 ## Format
 

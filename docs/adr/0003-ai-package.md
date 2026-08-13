@@ -21,7 +21,7 @@ Agent still programs against a `StreamFn`-shaped boundary; HTTP lives in `ai`, n
 ## Consequences
 
 - Two packages must version and test in lockstep
-- Clear home for Responses adapter and faux provider
+- Clear home for Responses adapter and stream protocol types
 
 ## Alternatives
 

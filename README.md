@@ -4,9 +4,9 @@ Clean-room agent runtime and LLM protocol for a durable-capable control loop.
 
 | Package | Name | Role |
 |---------|------|------|
-| `packages/ai` | `@z-agent/ai` | Messages, stream events, faux provider, OpenAI **Responses API** stream |
+| `packages/ai` | `@z-agent/ai` | Messages, stream events, OpenAI **Responses API** stream |
 | `packages/agent` | `@z-agent/agent` | Agent loop, tools, queues, Agent shell |
-| `packages/cli` | `@z-agent/cli` | Minimal smoke bin (`z-agent`) — faux default, optional `--live` |
+| `packages/cli` | `@z-agent/cli` | Minimal smoke bin (`z-agent`) — Responses + echo tool |
 | _(later)_ | `@z-agent/harness` | L5 durable: intent / effect / settle + `op.state` |
 
 ## Status
@@ -20,7 +20,7 @@ Libraries + tiny demo CLI. Loop implementation follows the ordered plan in `AGEN
 
 ## Requirements
 
-- Node.js >= 22
+- Node.js >= 22.6
 - npm workspaces
 
 ```bash
@@ -32,12 +32,11 @@ npm test
 ## Try the agent (smoke CLI)
 
 ```bash
-# offline faux stream + echo tool (no API key)
-npm run z-agent
-npx z-agent "hello"
+export OPENAI_API_KEY=sk-...
+# optional: export OPENAI_BASE_URL=https://api.openai.com/v1
 
-# live OpenAI Responses
-OPENAI_API_KEY=sk-... npm run z-agent -- --live "echo hi"
+npm run z-agent
+npx z-agent "use the echo tool"
 ```
 
 See [`packages/cli/README.md`](packages/cli/README.md).

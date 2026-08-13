@@ -32,7 +32,7 @@ describe("agent type surface", () => {
 			role: "assistant",
 			content: [{ type: "text", text: "ok" }],
 			api: "test",
-			provider: "faux",
+			provider: "test",
 			model: "m",
 			usage: {
 				input: 0,
@@ -168,6 +168,19 @@ describe("agent type surface", () => {
 			},
 		};
 		expect(msg.usage?.totalTokens).toBe(0);
+	});
+
+	it("ToolResultMessage accepts optional addedToolNames", () => {
+		const msg: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "c1",
+			toolName: "echo",
+			content: [{ type: "text", text: "x" }],
+			isError: false,
+			timestamp: 0,
+			addedToolNames: ["search"],
+		};
+		expect(msg.addedToolNames).toEqual(["search"]);
 	});
 
 	it("AgentContext holds AgentMessage transcript and tools", () => {

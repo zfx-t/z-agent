@@ -11,6 +11,9 @@ In-memory agent control loop for Z Agent.
 - Agent shell: prompt mutex, subscribe, abort
 - Steering + follow-up queues
 - continue, transformContext, convertToLlm, before/afterToolCall, terminate batch, length-truncated tool batch failure
+- AgentTool → LLM Tool (JSON Schema) at streamAssistant
+- prepareNextTurn / shouldStopAfterTurn, thinkingLevel, addedToolNames passthrough
+- agentLoop / agentLoopContinue EventStream wrappers
 
 ## Effect boundaries
 

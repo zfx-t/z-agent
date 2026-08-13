@@ -1,5 +1,5 @@
 /**
- * @z-agent/ai — LLM message protocol, stream events, StreamFn, faux provider,
+ * @z-agent/ai — LLM message protocol, stream events, StreamFn,
  * OpenAI Responses API production stream (ADR-0005).
  */
 
@@ -7,22 +7,6 @@ export const AI_PACKAGE = "@z-agent/ai" as const;
 
 export type { AssistantMessageEventStream } from "./event-stream.ts";
 export { createAssistantMessageEventStream, EventStream } from "./event-stream.ts";
-export type {
-	CreateFauxStreamOptions,
-	FauxContentBlock,
-	FauxProviderState,
-	FauxResponseFactory,
-	FauxResponseStep,
-	FauxStreamHandle,
-} from "./faux.ts";
-export {
-	createFauxProvider,
-	createFauxStream,
-	fauxAssistantMessage,
-	fauxText,
-	fauxThinking,
-	fauxToolCall,
-} from "./faux.ts";
 export type { OpenAIResponsesConfig, OpenAIResponsesStreamOptions } from "./openai-responses.ts";
 export {
 	buildResponsesBody,
@@ -46,6 +30,7 @@ export type {
 	StreamOptions,
 	TextContent,
 	ThinkingContent,
+	ThinkingLevel,
 	Tool,
 	ToolCall,
 	ToolResultContent,

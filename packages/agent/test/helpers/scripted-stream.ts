@@ -1,21 +1,25 @@
-import type { AssistantMessageEventStream } from "./event-stream.ts";
-import { createAssistantMessageEventStream } from "./event-stream.ts";
-import type {
-	AssistantMessage,
-	Context,
-	Model,
-	StreamFn,
-	StreamOptions,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
-} from "./types.ts";
-import { emptyUsage } from "./types.ts";
+/**
+ * Test-only scripted StreamFn helper for agent unit tests.
+ * Not exported from @z-agent/ai — production uses OpenAI Responses (or injected StreamFn).
+ */
+import {
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type Context,
+	createAssistantMessageEventStream,
+	emptyUsage,
+	type Model,
+	type StreamFn,
+	type StreamOptions,
+	type TextContent,
+	type ThinkingContent,
+	type ToolCall,
+} from "@z-agent/ai";
 
-const DEFAULT_API = "faux";
-const DEFAULT_PROVIDER = "faux";
-const DEFAULT_MODEL_ID = "faux-1";
-const DEFAULT_MODEL_NAME = "Faux Model";
+const DEFAULT_API = "test";
+const DEFAULT_PROVIDER = "test";
+const DEFAULT_MODEL_ID = "test-1";
+const DEFAULT_MODEL_NAME = "Test Model";
 const DEFAULT_BASE_URL = "http://localhost:0";
 /** Default: emit each block in a single delta (deterministic tests). */
 const DEFAULT_CHUNK_CHARS = 0;
@@ -24,17 +28,17 @@ const DEFAULT_CHUNK_CHARS = 0;
 // Content helpers
 // ---------------------------------------------------------------------------
 
-export type FauxContentBlock = TextContent | ThinkingContent | ToolCall;
+export type ScriptedContentBlock = TextContent | ThinkingContent | ToolCall;
 
-export function fauxText(text: string): TextContent {
+export function scriptedText(text: string): TextContent {
 	return { type: "text", text };
 }
 
-export function fauxThinking(thinking: string): ThinkingContent {
+export function scriptedThinking(thinking: string): ThinkingContent {
 	return { type: "thinking", thinking };
 }
 
-export function fauxToolCall(name: string, args: ToolCall["arguments"], options: { id?: string } = {}): ToolCall {
+export function scriptedToolCall(name: string, args: ToolCall["arguments"], options: { id?: string } = {}): ToolCall {
 	return {
 		type: "toolCall",
 		id: options.id ?? randomId("tool"),
@@ -43,15 +47,15 @@ export function fauxToolCall(name: string, args: ToolCall["arguments"], options:
 	};
 }
 
-function normalizeContent(content: string | FauxContentBlock | FauxContentBlock[]): FauxContentBlock[] {
+function normalizeContent(content: string | ScriptedContentBlock | ScriptedContentBlock[]): ScriptedContentBlock[] {
 	if (typeof content === "string") {
-		return [fauxText(content)];
+		return [scriptedText(content)];
 	}
 	return Array.isArray(content) ? content : [content];
 }
 
-export function fauxAssistantMessage(
-	content: string | FauxContentBlock | FauxContentBlock[],
+export function scriptedAssistantMessage(
+	content: string | ScriptedContentBlock | ScriptedContentBlock[],
 	options: {
 		stopReason?: AssistantMessage["stopReason"];
 		errorMessage?: string;
@@ -77,28 +81,28 @@ export function fauxAssistantMessage(
 }
 
 // ---------------------------------------------------------------------------
-// Faux provider handle
+// Scripted stream handle
 // ---------------------------------------------------------------------------
 
-export interface FauxProviderState {
+export interface ScriptedStreamState {
 	callCount: number;
 }
 
-export type FauxResponseFactory = (
+export type ScriptedResponseFactory = (
 	context: Context,
 	options: StreamOptions | undefined,
-	state: FauxProviderState,
+	state: ScriptedStreamState,
 	model: Model,
 ) => AssistantMessage | Promise<AssistantMessage>;
 
-export type FauxResponseStep = AssistantMessage | FauxResponseFactory;
+export type ScriptedResponseStep = AssistantMessage | ScriptedResponseFactory;
 
-export interface CreateFauxStreamOptions {
+export interface CreateScriptedStreamOptions {
 	api?: string;
 	provider?: string;
 	model?: Partial<Pick<Model, "id" | "name" | "baseUrl" | "reasoning" | "input" | "contextWindow" | "maxTokens">>;
 	/** Initial response queue. */
-	responses?: FauxResponseStep[];
+	responses?: ScriptedResponseStep[];
 	/**
 	 * Max characters per text/thinking/toolcall delta.
 	 * `0` (default) = one delta per content block (fully deterministic).
@@ -106,13 +110,13 @@ export interface CreateFauxStreamOptions {
 	chunkChars?: number;
 }
 
-export interface FauxStreamHandle {
+export interface ScriptedStreamHandle {
 	/** Injected StreamFn — never throws for empty queue / scripted errors. */
 	streamFn: StreamFn;
 	model: Model;
-	state: FauxProviderState;
-	setResponses: (responses: FauxResponseStep[]) => void;
-	appendResponses: (responses: FauxResponseStep[]) => void;
+	state: ScriptedStreamState;
+	setResponses: (responses: ScriptedResponseStep[]) => void;
+	appendResponses: (responses: ScriptedResponseStep[]) => void;
 	getPendingResponseCount: () => number;
 }
 
@@ -320,7 +324,7 @@ async function streamScriptedMessage(
 	if (pushAbort()) return;
 
 	if (message.stopReason === "pending") {
-		const err = createErrorMessage(new Error("Faux response ended without a stop reason"), {
+		const err = createErrorMessage(new Error("Scripted response ended without a stop reason"), {
 			id: message.model,
 			name: message.model,
 			api: message.api,
@@ -357,11 +361,11 @@ async function streamScriptedMessage(
 /**
  * Create a scripted in-process StreamFn for tests.
  *
- * - Responses are drained FIFO via {@link FauxStreamHandle.setResponses}.
+ * - Responses are drained FIFO via {@link ScriptedStreamHandle.setResponses}.
  * - Empty queue yields an error assistant message (does not throw).
  * - Factories receive context / options / state / model for dynamic scripts.
  */
-export function createFauxStream(options: CreateFauxStreamOptions = {}): FauxStreamHandle {
+export function createScriptedStream(options: CreateScriptedStreamOptions = {}): ScriptedStreamHandle {
 	const api = options.api ?? DEFAULT_API;
 	const provider = options.provider ?? DEFAULT_PROVIDER;
 	const chunkChars = options.chunkChars ?? DEFAULT_CHUNK_CHARS;
@@ -378,8 +382,8 @@ export function createFauxStream(options: CreateFauxStreamOptions = {}): FauxStr
 		maxTokens: options.model?.maxTokens,
 	};
 
-	let pending: FauxResponseStep[] = options.responses ? [...options.responses] : [];
-	const state: FauxProviderState = { callCount: 0 };
+	let pending: ScriptedResponseStep[] = options.responses ? [...options.responses] : [];
+	const state: ScriptedStreamState = { callCount: 0 };
 
 	const streamFn: StreamFn = (streamModel, context, streamOptions) => {
 		const stream = createAssistantMessageEventStream();
@@ -390,7 +394,7 @@ export function createFauxStream(options: CreateFauxStreamOptions = {}): FauxStr
 				state.callCount += 1;
 				const step = pending.shift();
 				if (!step) {
-					const err = createErrorMessage(new Error("No more faux responses queued"), streamModel);
+					const err = createErrorMessage(new Error("No more scripted responses queued"), streamModel);
 					stream.push({ type: "error", reason: "error", error: err });
 					stream.end(err);
 					return;
@@ -422,10 +426,10 @@ export function createFauxStream(options: CreateFauxStreamOptions = {}): FauxStr
 		streamFn,
 		model,
 		state,
-		setResponses(responses: FauxResponseStep[]) {
+		setResponses(responses: ScriptedResponseStep[]) {
 			pending = [...responses];
 		},
-		appendResponses(responses: FauxResponseStep[]) {
+		appendResponses(responses: ScriptedResponseStep[]) {
 			pending.push(...responses);
 		},
 		getPendingResponseCount() {
@@ -433,6 +437,3 @@ export function createFauxStream(options: CreateFauxStreamOptions = {}): FauxStr
 		},
 	};
 }
-
-/** Alias matching the design-doc name. */
-export const createFauxProvider = createFauxStream;

@@ -122,6 +122,8 @@ export interface ToolResultMessage {
 	details?: unknown;
 	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 	usage?: Usage;
+	/** Names of tools introduced by this result; not used for deferred loading in this slice (ADR-0015). */
+	addedToolNames?: string[];
 	isError: boolean;
 	timestamp: number;
 }
@@ -174,7 +176,17 @@ export interface StreamOptions {
 	sessionId?: string;
 	/** Arbitrary sampling params merged into provider requests when supported. */
 	samplingParams?: Record<string, unknown>;
+	/**
+	 * Requested reasoning / thinking effort. `"off"` is represented by omitting this field.
+	 */
+	reasoning?: Exclude<ThinkingLevel, "off">;
 }
+
+/**
+ * Thinking/reasoning level for models that support it.
+ * `"xhigh"` and `"max"` are only supported by selected model families.
+ */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * Provider stream contract.

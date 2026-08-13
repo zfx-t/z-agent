@@ -1,4 +1,4 @@
-import { createFauxStream, fauxAssistantMessage, fauxText, fauxToolCall, type Message } from "@z-agent/ai";
+import type { Message } from "@z-agent/ai";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -6,10 +6,18 @@ import {
 	type AgentLoopConfig,
 	type AgentMessage,
 	type AgentTool,
+	agentLoop,
+	agentLoopContinue,
 	createAgentEventCollector,
 	runAgentLoop,
 	runAgentLoopContinue,
 } from "../src/index.ts";
+import {
+	createScriptedStream,
+	scriptedAssistantMessage,
+	scriptedText,
+	scriptedToolCall,
+} from "./helpers/scripted-stream.ts";
 
 function identityConvert(messages: AgentMessage[]): Message[] {
 	return messages.filter(
@@ -27,8 +35,8 @@ function user(text: string, timestamp = 1): AgentMessage {
 
 describe("runAgentLoop text-only", () => {
 	it("emits full event sequence for a text turn", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("Hi there!")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("Hi there!")],
 		});
 		const collector = createAgentEventCollector();
 		const context: AgentContext = {
@@ -36,19 +44,19 @@ describe("runAgentLoop text-only", () => {
 			messages: [],
 		};
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 		const prompt = user("Hello");
 
-		const newMessages = await runAgentLoop([prompt], context, config, collector.sink, undefined, faux.streamFn);
+		const newMessages = await runAgentLoop([prompt], context, config, collector.sink, undefined, scripted.streamFn);
 
 		expect(newMessages).toHaveLength(2);
 		expect(newMessages[0]?.role).toBe("user");
 		expect(newMessages[1]?.role).toBe("assistant");
 		if (newMessages[1]?.role === "assistant") {
 			expect(newMessages[1].stopReason).toBe("stop");
-			expect(newMessages[1].content).toEqual([fauxText("Hi there!")]);
+			expect(newMessages[1].content).toEqual([scriptedText("Hi there!")]);
 		}
 
 		const types = collector.types();
@@ -90,13 +98,13 @@ describe("runAgentLoop text-only", () => {
 	});
 
 	it("emits message_update during stream with assistantMessageEvent", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("abc")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("abc")],
 			chunkChars: 1,
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -106,7 +114,7 @@ describe("runAgentLoop text-only", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const updates = collector.events.filter((e) => e.type === "message_update");
@@ -121,12 +129,12 @@ describe("runAgentLoop text-only", () => {
 
 describe("runAgentLoop error / aborted", () => {
 	it("ends agent on stopReason error without further turns", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("boom", { stopReason: "error", errorMessage: "provider failed" })],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("boom", { stopReason: "error", errorMessage: "provider failed" })],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -136,7 +144,7 @@ describe("runAgentLoop error / aborted", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const assistant = newMessages.find((m) => m.role === "assistant");
@@ -147,18 +155,18 @@ describe("runAgentLoop error / aborted", () => {
 		expect(withoutUpdates.slice(-2)).toEqual(["turn_end", "agent_end"]);
 		expect(types.filter((t) => t === "turn_start")).toHaveLength(1);
 		expect(types.filter((t) => t === "agent_end")).toHaveLength(1);
-		expect(faux.getPendingResponseCount()).toBe(0);
+		expect(scripted.getPendingResponseCount()).toBe(0);
 	});
 
 	it("ends agent on abort mid-stream", async () => {
 		const ac = new AbortController();
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("long response that aborts")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("long response that aborts")],
 			chunkChars: 1,
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -176,7 +184,7 @@ describe("runAgentLoop error / aborted", () => {
 			config,
 			sink,
 			ac.signal,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const assistant = newMessages.find((m) => m.role === "assistant");
@@ -198,19 +206,19 @@ describe("convertToLlm / transformContext", () => {
 		const prior: AgentMessage[] = [notification as unknown as AgentMessage, user("keep me", 2)];
 
 		let seenByConvert: AgentMessage[] = [];
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				(context) => {
 					// Provider sees only LLM messages
 					expect(context.messages.every((m) => (m.role as string) !== "notification")).toBe(true);
 					expect(context.messages.map((m) => m.role)).toEqual(["user", "user"]);
-					return fauxAssistantMessage("ok");
+					return scriptedAssistantMessage("ok");
 				},
 			],
 		});
 
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: (messages) => {
 				seenByConvert = [...messages];
 				return identityConvert(messages);
@@ -223,7 +231,7 @@ describe("convertToLlm / transformContext", () => {
 			config,
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		// convertToLlm receives agent-layer messages including notification + prompts
@@ -233,11 +241,11 @@ describe("convertToLlm / transformContext", () => {
 
 	it("applies transformContext before convertToLlm", async () => {
 		const order: string[] = [];
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("y")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("y")],
 		});
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			transformContext: async (messages) => {
 				order.push("transform");
 				// Keep only the last message
@@ -260,10 +268,136 @@ describe("convertToLlm / transformContext", () => {
 			config,
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(order).toEqual(["transform", "convert"]);
+	});
+});
+
+describe("streamAssistant passes LLM tools", () => {
+	it("converts AgentTool zod schemas onto StreamFn context.tools", async () => {
+		const echoSchema = z.object({ text: z.string() });
+		const tool: AgentTool<typeof echoSchema> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo text",
+			parameters: echoSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		let capturedTools: unknown;
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedTools = ctx.tools;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(capturedTools).toEqual([
+			expect.objectContaining({
+				name: "echo",
+				description: "Echo text",
+				parameters: expect.objectContaining({
+					type: "object",
+					properties: expect.objectContaining({
+						text: expect.objectContaining({ type: "string" }),
+					}),
+				}),
+			}),
+		]);
+	});
+
+	it("omits context.tools when the agent has no tools", async () => {
+		let capturedTools: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedTools = ctx.tools;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(capturedTools).toBeUndefined();
+
+		capturedTools = "unset";
+		scripted.setResponses([scriptedAssistantMessage("hi")]);
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [], tools: [] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+		expect(capturedTools).toBeUndefined();
+	});
+});
+
+describe("streamAssistant reasoning option", () => {
+	it("forwards config.reasoning to StreamFn options", async () => {
+		let capturedReasoning: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedReasoning = options?.reasoning;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [] },
+			{ model: scripted.model, convertToLlm: identityConvert, reasoning: "low" },
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(capturedReasoning).toBe("low");
+	});
+
+	it("omits options.reasoning when config.reasoning is unset", async () => {
+		let capturedReasoning: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedReasoning = options?.reasoning;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(capturedReasoning).toBeUndefined();
 	});
 });
 
@@ -292,17 +426,17 @@ describe("sequential tools (prepare → execute → after)", () => {
 			};
 		});
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { value: "hello" }, { id: "c1" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hello" }, { id: "c1" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -312,7 +446,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(executed).toEqual(["hello"]);
@@ -342,6 +476,67 @@ describe("sequential tools (prepare → execute → after)", () => {
 		}
 	});
 
+	it("propagates non-empty addedToolNames onto the toolResult message", async () => {
+		const tool = echoTool(async (_id, params) => {
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+				addedToolNames: ["search"],
+			};
+		});
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hello" }, { id: "c1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("done"),
+			],
+		});
+		const newMessages = await runAgentLoop(
+			[user("use tool")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+		const toolResult = newMessages.find((m) => m.role === "toolResult");
+		expect(toolResult?.role === "toolResult" ? toolResult.addedToolNames : undefined).toEqual(["search"]);
+	});
+
+	it("omits addedToolNames when missing or empty", async () => {
+		const missing = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: params.value }],
+			details: { value: params.value },
+		}));
+		const empty = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: params.value }],
+			details: { value: params.value },
+			addedToolNames: [],
+		}));
+
+		for (const tool of [missing, empty]) {
+			const scripted = createScriptedStream({
+				responses: [
+					scriptedAssistantMessage([scriptedToolCall("echo", { value: "x" }, { id: "c1" })], {
+						stopReason: "toolUse",
+					}),
+					scriptedAssistantMessage("done"),
+				],
+			});
+			const newMessages = await runAgentLoop(
+				[user("use tool")],
+				{ systemPrompt: "", messages: [], tools: [tool] },
+				{ model: scripted.model, convertToLlm: identityConvert },
+				createAgentEventCollector().sink,
+				undefined,
+				scripted.streamFn,
+			);
+			const toolResult = newMessages.find((m) => m.role === "toolResult");
+			expect(toolResult?.role === "toolResult" && "addedToolNames" in toolResult).toBe(false);
+		}
+	});
+
 	it("rejects invalid args without calling execute", async () => {
 		let executed = false;
 		const tool = echoTool(async () => {
@@ -349,18 +544,18 @@ describe("sequential tools (prepare → execute → after)", () => {
 			return { content: [{ type: "text", text: "nope" }], details: { value: "x" } };
 		});
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				// missing required `value`
-				fauxAssistantMessage([fauxToolCall("echo", { wrong: 1 }, { id: "bad" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { wrong: 1 }, { id: "bad" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("recovered"),
+				scriptedAssistantMessage("recovered"),
 			],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -370,7 +565,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(executed).toBe(false);
@@ -396,17 +591,17 @@ describe("sequential tools (prepare → execute → after)", () => {
 			return { content: [{ type: "text", text: "nope" }], details: { value: "x" } };
 		});
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { value: "hi" }, { id: "b1" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hi" }, { id: "b1" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("after block"),
+				scriptedAssistantMessage("after block"),
 			],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 			beforeToolCall: async () => ({ block: true, reason: "Blocked by policy" }),
 		};
@@ -417,7 +612,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(executed).toBe(false);
@@ -437,16 +632,16 @@ describe("sequential tools (prepare → execute → after)", () => {
 			details: { value: params.value, original: true },
 		}));
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { value: "x" }, { id: "a1" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "x" }, { id: "a1" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 			afterToolCall: async () => ({
 				content: [{ type: "text", text: "overridden" }],
@@ -461,7 +656,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const toolResult = newMessages.find((m) => m.role === "toolResult");
@@ -482,21 +677,21 @@ describe("sequential tools (prepare → execute → after)", () => {
 			};
 		});
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("echo", { value: "hel" }, { id: "t1" }),
-						fauxToolCall("echo", { value: "lo" }, { id: "t2" }),
+						scriptedToolCall("echo", { value: "hel" }, { id: "t1" }),
+						scriptedToolCall("echo", { value: "lo" }, { id: "t2" }),
 					],
 					{ stopReason: "length" },
 				),
-				fauxAssistantMessage("re-issue ok"),
+				scriptedAssistantMessage("re-issue ok"),
 			],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -506,7 +701,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(executed).toEqual([]);
@@ -534,17 +729,17 @@ describe("sequential tools (prepare → execute → after)", () => {
 			terminate: true,
 		}));
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { value: "stop" }, { id: "term" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "stop" }, { id: "term" })], {
 					stopReason: "toolUse",
 				}),
 				// Must not be consumed
-				fauxAssistantMessage("should not run"),
+				scriptedAssistantMessage("should not run"),
 			],
 		});
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -554,24 +749,24 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
-		expect(faux.getPendingResponseCount()).toBe(1);
+		expect(scripted.getPendingResponseCount()).toBe(1);
 	});
 
 	it("returns error toolResult for unknown tool without execute", async () => {
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("missing", { a: 1 }, { id: "u1" })], {
+				scriptedAssistantMessage([scriptedToolCall("missing", { a: 1 }, { id: "u1" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("ok"),
+				scriptedAssistantMessage("ok"),
 			],
 		});
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 
@@ -581,7 +776,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 			config,
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const toolResult = newMessages.find((m) => m.role === "toolResult");
@@ -597,12 +792,12 @@ describe("sequential tools (prepare → execute → after)", () => {
 			content: [{ type: "text", text: params.value }],
 			details: { value: params.value },
 		}));
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage([fauxToolCall("echo", { value: "z" }, { id: "ord" })], {
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "z" }, { id: "ord" })], {
 					stopReason: "toolUse",
 				}),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
@@ -610,10 +805,10 @@ describe("sequential tools (prepare → execute → after)", () => {
 			[user("order")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
 			// Sequential: end and toolResult message pair are adjacent per call
-			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "sequential" },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "sequential" },
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const types = collector.types().filter((t) => t !== "message_update");
@@ -655,16 +850,16 @@ describe("sequential tools (prepare → execute → after)", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
-						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
 					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
@@ -672,10 +867,10 @@ describe("sequential tools (prepare → execute → after)", () => {
 		const runPromise = runAgentLoop(
 			[user("seq")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "sequential" },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "sequential" },
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 		// Release the first tool after a short delay so a parallel path would race
 		setTimeout(() => releaseFirst?.(), 20);
@@ -721,16 +916,16 @@ describe("parallel three-phase tools", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
-						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
 					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
@@ -739,10 +934,10 @@ describe("parallel three-phase tools", () => {
 			[user("parallel")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
 			// default toolExecution is parallel; set explicitly for clarity
-			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "parallel" },
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 		setTimeout(() => releaseFirst?.(), 20);
 		const newMessages = await runPromise;
@@ -800,26 +995,26 @@ describe("parallel three-phase tools", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
-						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
 					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 
 		const runPromise = runAgentLoop(
 			[user("default parallel")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: faux.model, convertToLlm: identityConvert },
+			{ model: scripted.model, convertToLlm: identityConvert },
 			createAgentEventCollector().sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 		setTimeout(() => releaseFirst?.(), 20);
 		await runPromise;
@@ -856,16 +1051,16 @@ describe("parallel three-phase tools", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("slow", { value: "first" }, { id: "tool-1" }),
-						fauxToolCall("slow", { value: "second" }, { id: "tool-2" }),
+						scriptedToolCall("slow", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("slow", { value: "second" }, { id: "tool-2" }),
 					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
@@ -874,10 +1069,10 @@ describe("parallel three-phase tools", () => {
 			[user("force seq")],
 			{ systemPrompt: "", messages: [], tools: [slowTool] },
 			// parallel config, but tool forces sequential
-			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "parallel" },
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 		setTimeout(() => releaseFirst?.(), 20);
 		await runPromise;
@@ -904,23 +1099,26 @@ describe("parallel three-phase tools", () => {
 			},
 		};
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
-					[fauxToolCall("echo", { value: "a" }, { id: "a" }), fauxToolCall("echo", { value: "b" }, { id: "b" })],
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "a" }, { id: "a" }),
+						scriptedToolCall("echo", { value: "b" }, { id: "b" }),
+					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("done"),
+				scriptedAssistantMessage("done"),
 			],
 		});
 		const collector = createAgentEventCollector();
 		await runAgentLoop(
 			[user("phase3")],
 			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: faux.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "parallel" },
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		const relevant = collector.events.filter((e) => e.type !== "message_update");
@@ -936,12 +1134,12 @@ describe("parallel three-phase tools", () => {
 
 describe("runAgentLoopContinue", () => {
 	it("continues from existing user context without re-emitting prompts", async () => {
-		const faux = createFauxStream({
-			responses: [fauxAssistantMessage("continued")],
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("continued")],
 		});
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 		const context: AgentContext = {
@@ -950,7 +1148,7 @@ describe("runAgentLoopContinue", () => {
 		};
 		const priorLength = context.messages.length;
 
-		const newMessages = await runAgentLoopContinue(context, config, collector.sink, undefined, faux.streamFn);
+		const newMessages = await runAgentLoopContinue(context, config, collector.sink, undefined, scripted.streamFn);
 
 		expect(newMessages).toHaveLength(1);
 		expect(newMessages[0]?.role).toBe("assistant");
@@ -970,27 +1168,27 @@ describe("runAgentLoopContinue", () => {
 	});
 
 	it("rejects empty context and trailing assistant", async () => {
-		const faux = createFauxStream();
+		const scripted = createScriptedStream();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 		};
 		const sink = createAgentEventCollector().sink;
 
 		await expect(
-			runAgentLoopContinue({ systemPrompt: "", messages: [] }, config, sink, undefined, faux.streamFn),
+			runAgentLoopContinue({ systemPrompt: "", messages: [] }, config, sink, undefined, scripted.streamFn),
 		).rejects.toThrow(/no messages/);
 
 		await expect(
 			runAgentLoopContinue(
 				{
 					systemPrompt: "",
-					messages: [fauxAssistantMessage("last")],
+					messages: [scriptedAssistantMessage("last")],
 				},
 				config,
 				sink,
 				undefined,
-				faux.streamFn,
+				scripted.streamFn,
 			),
 		).rejects.toThrow(/assistant/);
 	});
@@ -1017,12 +1215,12 @@ describe("steering and follow-up drains", () => {
 		let steeringDelivered = false;
 		let sawInterruptInContext = false;
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
-				fauxAssistantMessage(
+				scriptedAssistantMessage(
 					[
-						fauxToolCall("echo", { value: "first" }, { id: "tool-1" }),
-						fauxToolCall("echo", { value: "second" }, { id: "tool-2" }),
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
 					],
 					{ stopReason: "toolUse" },
 				),
@@ -1032,14 +1230,14 @@ describe("steering and follow-up drains", () => {
 							m.role === "user" &&
 							(m.content === "interrupt" || JSON.stringify(m.content).includes("interrupt")),
 					);
-					return fauxAssistantMessage("done");
+					return scriptedAssistantMessage("done");
 				},
 			],
 		});
 
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 			toolExecution: "sequential",
 			getSteeringMessages: async () => {
@@ -1058,7 +1256,7 @@ describe("steering and follow-up drains", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		// Both tools run before steering injection.
@@ -1099,28 +1297,28 @@ describe("steering and follow-up drains", () => {
 		let llmCalls = 0;
 		const followUpMsg = user("follow-up", 50);
 
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			responses: [
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage([fauxToolCall("echo", { value: "a" }, { id: "t1" })], {
+					return scriptedAssistantMessage([scriptedToolCall("echo", { value: "a" }, { id: "t1" })], {
 						stopReason: "toolUse",
 					});
 				},
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage("after tools");
+					return scriptedAssistantMessage("after tools");
 				},
 				() => {
 					llmCalls++;
-					return fauxAssistantMessage("after follow-up");
+					return scriptedAssistantMessage("after follow-up");
 				},
 			],
 		});
 
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 			getSteeringMessages: async () => {
 				steeringPolls++;
@@ -1138,7 +1336,7 @@ describe("steering and follow-up drains", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		// Initial steering + after turn1 (tools) + after turn2 (text) = 3 steering polls.
@@ -1162,9 +1360,9 @@ describe("steering and follow-up drains", () => {
 		let call = 0;
 		const reply = () => {
 			call++;
-			return fauxAssistantMessage(`reply-${call}`);
+			return scriptedAssistantMessage(`reply-${call}`);
 		};
-		const faux = createFauxStream({
+		const scripted = createScriptedStream({
 			// start+s1, s2, follow → 3 turns (FIFO queue, one entry each)
 			responses: [reply, reply, reply],
 		});
@@ -1175,7 +1373,7 @@ describe("steering and follow-up drains", () => {
 
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
-			model: faux.model,
+			model: scripted.model,
 			convertToLlm: identityConvert,
 			// one-at-a-time style drains in the callbacks
 			getSteeringMessages: async () => {
@@ -1199,7 +1397,7 @@ describe("steering and follow-up drains", () => {
 			config,
 			collector.sink,
 			undefined,
-			faux.streamFn,
+			scripted.streamFn,
 		);
 
 		// Follow-up only polled when steering queue empty.
@@ -1211,5 +1409,333 @@ describe("steering and follow-up drains", () => {
 		expect(userTexts).toEqual(["start", "steer-1", "steer-2", "follow"]);
 		// Initial drain injects s1 before first assistant; s2 then follow → 3 LLM calls.
 		expect(call).toBe(3);
+	});
+});
+
+describe("prepareNextTurn", () => {
+	const echoSchema = z.object({ value: z.string() });
+
+	function echoTool(): AgentTool<typeof echoSchema, { value: string }> {
+		return {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: echoSchema,
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+	}
+
+	it("uses prepareNextTurn snapshot before the next provider request", async () => {
+		const tool = echoTool();
+		const context: AgentContext = {
+			systemPrompt: "first prompt",
+			messages: [],
+			tools: [tool],
+		};
+		let convertedSecondTurnSystemPrompt = "";
+		let prepared = false;
+		let llmCalls = 0;
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hello" }, { id: "tool-1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("done"),
+			],
+		});
+		const wrapped = ((model, ctx, options) => {
+			llmCalls++;
+			if (llmCalls === 2) {
+				convertedSecondTurnSystemPrompt = ctx.systemPrompt ?? "";
+			}
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		const config: AgentLoopConfig = {
+			model: scripted.model,
+			convertToLlm: identityConvert,
+			prepareNextTurn: async ({ context: currentContext }) => {
+				if (prepared) return undefined;
+				prepared = true;
+				return {
+					context: {
+						systemPrompt: "second prompt",
+						messages: currentContext.messages.slice(),
+						tools: currentContext.tools,
+					},
+				};
+			},
+		};
+
+		await runAgentLoop(
+			[user("echo something")],
+			context,
+			config,
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(llmCalls).toBe(2);
+		expect(convertedSecondTurnSystemPrompt).toBe("second prompt");
+	});
+
+	it("applies prepareNextTurn model and thinkingLevel to the next StreamFn call", async () => {
+		const tool = echoTool();
+		let secondModelId = "";
+		let secondReasoning: unknown = "unset";
+		let llmCalls = 0;
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hello" }, { id: "tool-1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("done"),
+			],
+		});
+		const nextModel = { ...scripted.model, id: "next-model" };
+		const wrapped = ((model, ctx, options) => {
+			llmCalls++;
+			if (llmCalls === 2) {
+				secondModelId = model.id;
+				secondReasoning = options?.reasoning;
+			}
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("echo something")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				prepareNextTurn: async () => ({
+					model: nextModel,
+					thinkingLevel: "low",
+				}),
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(llmCalls).toBe(2);
+		expect(secondModelId).toBe("next-model");
+		expect(secondReasoning).toBe("low");
+	});
+});
+
+describe("shouldStopAfterTurn", () => {
+	const echoSchema = z.object({ value: z.string() });
+
+	function echoTool(
+		execute: AgentTool<typeof echoSchema, { value: string }>["execute"] = async (_id, params) => ({
+			content: [{ type: "text", text: `echoed: ${params.value}` }],
+			details: { value: params.value },
+		}),
+	): AgentTool<typeof echoSchema, { value: string }> {
+		return {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: echoSchema,
+			execute,
+		};
+	}
+
+	it("stops after the current turn when shouldStopAfterTurn returns true", async () => {
+		const executed: string[] = [];
+		const tool = echoTool(async (_id, params) => {
+			executed.push(params.value);
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+			};
+		});
+
+		let steeringPolls = 0;
+		let followUpPolls = 0;
+		let callbackToolResultIds: string[] = [];
+		let callbackContextRoles: string[] = [];
+		let llmCalls = 0;
+		const scripted = createScriptedStream({
+			responses: [
+				() => {
+					llmCalls++;
+					return scriptedAssistantMessage([scriptedToolCall("echo", { value: "hello" }, { id: "tool-1" })], {
+						stopReason: "toolUse",
+					});
+				},
+				() => {
+					llmCalls++;
+					return scriptedAssistantMessage("should not run");
+				},
+			],
+		});
+
+		const collector = createAgentEventCollector();
+		const newMessages = await runAgentLoop(
+			[user("echo something")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				getSteeringMessages: async () => {
+					steeringPolls++;
+					return [];
+				},
+				getFollowUpMessages: async () => {
+					followUpPolls++;
+					return [user("follow up should stay queued")];
+				},
+				shouldStopAfterTurn: async ({ message, toolResults, context }) => {
+					expect(message.role).toBe("assistant");
+					callbackToolResultIds = toolResults.map((toolResult) => toolResult.toolCallId);
+					callbackContextRoles = context.messages.map((contextMessage) =>
+						"role" in contextMessage ? String(contextMessage.role) : "?",
+					);
+					return true;
+				},
+			},
+			collector.sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(llmCalls).toBe(1);
+		expect(executed).toEqual(["hello"]);
+		expect(steeringPolls).toBe(1);
+		expect(followUpPolls).toBe(0);
+		expect(callbackToolResultIds).toEqual(["tool-1"]);
+		expect(callbackContextRoles).toEqual(["user", "assistant", "toolResult"]);
+		expect(newMessages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(collector.types().filter((t) => t !== "message_update")).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"message_start",
+			"message_end",
+			"tool_execution_start",
+			"tool_execution_end",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+	});
+
+	it("still drains follow-up when shouldStopAfterTurn is false or omitted", async () => {
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("first"), scriptedAssistantMessage("after follow-up")],
+		});
+		let followUpPolls = 0;
+		const followUp = user("follow", 2);
+
+		await runAgentLoop(
+			[user("start")],
+			{ systemPrompt: "", messages: [] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				shouldStopAfterTurn: async () => false,
+				getFollowUpMessages: async () => {
+					followUpPolls++;
+					return followUpPolls === 1 ? [followUp] : [];
+				},
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(followUpPolls).toBe(2);
+		expect(scripted.state.callCount).toBe(2);
+	});
+});
+
+describe("agentLoop EventStream wrappers", () => {
+	it("yields events and resolves result() to newMessages", async () => {
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("Hi there!")],
+		});
+		const stream = agentLoop(
+			[user("Hello")],
+			{ systemPrompt: "sys", messages: [] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			undefined,
+			scripted.streamFn,
+		);
+
+		const types: string[] = [];
+		for await (const event of stream) {
+			types.push(event.type);
+		}
+
+		const messages = await stream.result();
+		expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+		expect(types.filter((t) => t !== "message_update")).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+	});
+
+	it("agentLoopContinue yields events without re-emitting the existing prompt", async () => {
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("continued")],
+		});
+		const existing = user("already there");
+		const stream = agentLoopContinue(
+			{ systemPrompt: "", messages: [existing] },
+			{ model: scripted.model, convertToLlm: identityConvert },
+			undefined,
+			scripted.streamFn,
+		);
+
+		const types: string[] = [];
+		for await (const event of stream) {
+			types.push(event.type);
+		}
+		const messages = await stream.result();
+		expect(messages.map((m) => m.role)).toEqual(["assistant"]);
+		expect(types.filter((t) => t !== "message_update")).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+	});
+
+	it("rejects result() when runAgentLoop throws instead of hanging", async () => {
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const stream = agentLoop(
+			[user("Hello")],
+			{ systemPrompt: "", messages: [] },
+			{
+				model: scripted.model,
+				convertToLlm: () => {
+					throw new Error("convert boom");
+				},
+			},
+			undefined,
+			scripted.streamFn,
+		);
+
+		await expect(stream.result()).rejects.toThrow(/convert boom|EventStream ended without a final result/);
 	});
 });

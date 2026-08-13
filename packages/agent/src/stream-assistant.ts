@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, Context, Message, StreamFn, StreamOptions } from "@z-agent/ai";
 import type { AgentEventSink } from "./emit.ts";
+import { agentToolsToLlmTools } from "./tool-json-schema.ts";
 import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.ts";
 
 /**
@@ -35,10 +36,11 @@ export async function streamAssistant(
 	// AgentMessage[] → LLM Message[] (required dual-layer boundary)
 	const llmMessages: Message[] = await config.convertToLlm(messages);
 
+	const llmTools = agentToolsToLlmTools(context.tools ?? []);
 	const llmContext: Context = {
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages,
-		// AgentTool → LLM Tool conversion lands with tool-execution PRs
+		...(llmTools.length > 0 ? { tools: llmTools } : {}),
 	};
 
 	const resolvedApiKey =
@@ -50,6 +52,7 @@ export async function streamAssistant(
 		maxTokens: config.maxTokens,
 		sessionId: config.sessionId,
 		samplingParams: config.samplingParams,
+		reasoning: config.reasoning,
 		signal,
 	};
 
