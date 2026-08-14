@@ -12,7 +12,8 @@ function zodSchemaToJsonSchemaObject(schema: AgentTool["parameters"]): Record<st
 		target: "jsonSchema7",
 	});
 	if (typeof jsonSchema === "object" && jsonSchema !== null && !Array.isArray(jsonSchema)) {
-		return jsonSchema as Record<string, unknown>;
+		const { $schema: _schema, ...rest } = jsonSchema as Record<string, unknown>;
+		return rest;
 	}
 	return { type: "object", properties: {} };
 }

@@ -1,8 +1,8 @@
 /**
  * Agent event sink and small emit helpers.
  *
- * The loop (later PRs) awaits the sink for each event in semantic order.
- * Helpers here support composition and test collection only — no runLoop.
+ * The loop awaits the sink for each event in semantic order.
+ * Helpers here support composition and test collection.
  */
 
 import type { AgentEvent, AgentEventType } from "./types.ts";
@@ -46,7 +46,7 @@ export interface AgentEventCollector {
 
 /**
  * Create a collecting sink that records events in order.
- * Useful for unit tests of emit helpers and (later) runLoop ordering.
+ * Useful for unit tests of emit helpers and runLoop ordering.
  */
 export function createAgentEventCollector(): AgentEventCollector {
 	const events: AgentEvent[] = [];

@@ -6,7 +6,7 @@
  * steering / follow-up message queues.
  */
 
-import type { ImageContent, Message, Model, StreamFn, TextContent } from "@z-agent/ai";
+import type { ImageContent, Message, Model, StreamFn, StreamOptions, TextContent } from "@z-agent/ai";
 import { emptyUsage } from "@z-agent/ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
 import type {
@@ -115,6 +115,7 @@ export interface AgentOptions {
 	apiKey?: string;
 	temperature?: number;
 	maxTokens?: number;
+	samplingParams?: StreamOptions["samplingParams"];
 }
 
 /**
@@ -207,8 +208,10 @@ export class Agent {
 	public apiKey?: string;
 	public temperature?: number;
 	public maxTokens?: number;
+	public samplingParams?: StreamOptions["samplingParams"];
 
 	private activeRun?: ActiveRun;
+	private sawAgentEnd = false;
 
 	constructor(options: AgentOptions) {
 		this._state = createMutableAgentState(options.initialState);
@@ -228,6 +231,7 @@ export class Agent {
 		this.apiKey = options.apiKey;
 		this.temperature = options.temperature;
 		this.maxTokens = options.maxTokens;
+		this.samplingParams = options.samplingParams;
 	}
 
 	/**
@@ -470,6 +474,7 @@ export class Agent {
 			apiKey: this.apiKey,
 			temperature: this.temperature,
 			maxTokens: this.maxTokens,
+			samplingParams: this.samplingParams,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
@@ -492,6 +497,7 @@ export class Agent {
 			resolvePromise = resolve;
 		});
 		this.activeRun = { promise, resolve: resolvePromise, abortController };
+		this.sawAgentEnd = false;
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;
@@ -507,6 +513,10 @@ export class Agent {
 	}
 
 	private async handleRunFailure(error: unknown, aborted: boolean): Promise<void> {
+		if (this.sawAgentEnd) {
+			this._state.errorMessage = error instanceof Error ? error.message : String(error);
+			return;
+		}
 		const failureMessage = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "" }],
@@ -583,6 +593,7 @@ export class Agent {
 
 			case "agent_end":
 				this._state.streamingMessage = undefined;
+				this.sawAgentEnd = true;
 				break;
 		}
 

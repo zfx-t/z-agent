@@ -51,16 +51,48 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-export function normalizeForMatch(text: string): string {
+function replaceCompatChars(text: string): string {
 	return text
-		.normalize("NFKC")
-		.split("\n")
-		.map((line) => line.trimEnd())
-		.join("\n")
 		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
 		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
 		.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
 		.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
+}
+
+export function normalizeForMatch(text: string): string {
+	return replaceCompatChars(
+		text
+			.normalize("NFKC")
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.join("\n"),
+	);
+}
+
+/** Same transforms as {@link normalizeForMatch}, with source indices for each output char. */
+function mapTrimAndReplace(source: string): { normalized: string; toSource: number[] } {
+	const chars: string[] = [];
+	const toSource: number[] = [];
+	let i = 0;
+	while (i < source.length) {
+		const nl = source.indexOf("\n", i);
+		const lineEnd = nl === -1 ? source.length : nl;
+		const keepLen = source.slice(i, lineEnd).trimEnd().length;
+		for (let j = 0; j < keepLen; j++) {
+			const replaced = replaceCompatChars(source[i + j] ?? "");
+			for (const ch of replaced) {
+				chars.push(ch);
+				toSource.push(i + j);
+			}
+		}
+		if (nl === -1) {
+			break;
+		}
+		chars.push("\n");
+		toSource.push(nl);
+		i = nl + 1;
+	}
+	return { normalized: chars.join(""), toSource };
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -134,29 +166,50 @@ export function applyEdits(original: string, edits: FileEdit[], path: string): s
 		newText: normalizeToLF(edit.newText),
 	}));
 
-	let base = lf;
-	let working = lfEdits;
-	const exactMissing = lfEdits.some((edit) => base.indexOf(edit.oldText) === -1);
-	if (exactMissing) {
-		base = normalizeForMatch(lf);
-		working = lfEdits.map((edit) => ({
-			oldText: normalizeForMatch(edit.oldText),
-			newText: edit.newText,
-		}));
-	}
-
-	const located = locateEdits(base, working, path);
-	let next = base;
+	const exactMissing = lfEdits.some((edit) => lf.indexOf(edit.oldText) === -1);
+	const { applyBase, located } = exactMissing
+		? locateFuzzyEdits(lf, lfEdits, path)
+		: { applyBase: lf, located: locateEdits(lf, lfEdits, path) };
+	let next = applyBase;
 	for (let i = located.length - 1; i >= 0; i--) {
 		const item = located[i];
 		next = `${next.slice(0, item.start)}${item.newText}${next.slice(item.end)}`;
 	}
 
-	if (next === base) {
+	if (next === applyBase) {
 		throw new Error(`No changes made to ${path}.`);
 	}
 
 	return `${bom}${restoreLineEndings(next, ending)}`;
+}
+
+function locateFuzzyEdits(
+	lf: string,
+	lfEdits: FileEdit[],
+	path: string,
+): { applyBase: string; located: LocatedEdit[] } {
+	const nfkc = lf.normalize("NFKC");
+	const applyBase = nfkc === lf || nfkc.length === lf.length ? lf : nfkc;
+	const { normalized, toSource } = mapTrimAndReplace(applyBase.normalize("NFKC"));
+	const working = lfEdits.map((edit) => ({
+		oldText: normalizeForMatch(edit.oldText),
+		newText: edit.newText,
+	}));
+	const normLocated = locateEdits(normalized, working, path);
+	const located = normLocated.map((item) => ({
+		...item,
+		start: toSource[item.start] ?? applyBase.length,
+		end: item.end >= toSource.length ? applyBase.length : (toSource[item.end] ?? applyBase.length),
+	}));
+	located.sort((a, b) => a.start - b.start);
+	for (let i = 1; i < located.length; i++) {
+		if (located[i - 1].end > located[i].start) {
+			throw new Error(
+				`edits overlap in ${path} (edits[${located[i - 1].editIndex}] and edits[${located[i].editIndex}]).`,
+			);
+		}
+	}
+	return { applyBase, located };
 }
 
 export function createEditTool(

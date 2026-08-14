@@ -4,12 +4,26 @@
 
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { isAbsolute, relative } from "node:path";
 import { z } from "zod";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { type CodingToolsOptions, resolveJailRoot, throwIfAborted } from "./options.ts";
 import { resolveToolPath } from "./path.ts";
 import { truncateTail, truncationNotice } from "./truncate.ts";
 import { isDirectory, walkFiles } from "./walk.ts";
+
+export interface GrepToolOptions extends CodingToolsOptions {
+	/** Injected ripgrep for tests. Return undefined to fall back to the JS walker. */
+	ripgrep?: (pattern: string, searchRoot: string, signal?: AbortSignal) => Promise<string | undefined>;
+}
+
+function displayPath(absPath: string, cwd: string): string {
+	const rel = relative(cwd, absPath);
+	if (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)) {
+		return rel.split("\\").join("/");
+	}
+	return absPath === cwd ? "." : absPath;
+}
 
 const grepSchema = z.object({
 	pattern: z.string().describe("Regular expression to search for"),
@@ -29,9 +43,16 @@ function compilePattern(pattern: string): RegExp {
 	}
 }
 
-async function tryRipgrep(pattern: string, searchRoot: string, signal?: AbortSignal): Promise<string | undefined> {
+async function tryRipgrep(
+	pattern: string,
+	searchRoot: string,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const rgTarget = displayPath(searchRoot, cwd);
 	return await new Promise((resolve) => {
-		const child = spawn("rg", ["-n", "--no-heading", "--color", "never", "-e", pattern, searchRoot], {
+		const child = spawn("rg", ["-n", "--no-heading", "--color", "never", "-e", pattern, rgTarget], {
+			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const chunks: Buffer[] = [];
@@ -53,6 +74,10 @@ async function tryRipgrep(pattern: string, searchRoot: string, signal?: AbortSig
 		});
 		child.once("close", (code) => {
 			signal?.removeEventListener("abort", onAbort);
+			if (signal?.aborted) {
+				resolve(undefined);
+				return;
+			}
 			if (code === 0 || code === 1) {
 				resolve(Buffer.concat(chunks).toString("utf-8"));
 				return;
@@ -62,16 +87,17 @@ async function tryRipgrep(pattern: string, searchRoot: string, signal?: AbortSig
 	});
 }
 
-async function nodeGrep(pattern: string, searchRoot: string, signal?: AbortSignal): Promise<string> {
+async function nodeGrep(pattern: string, searchRoot: string, cwd: string, signal?: AbortSignal): Promise<string> {
 	const regex = compilePattern(pattern);
 	const lines: string[] = [];
 	const rootIsDir = await isDirectory(searchRoot);
 	if (!rootIsDir) {
 		const text = await readFile(searchRoot, "utf-8");
 		const fileLines = text.split("\n");
+		const shown = displayPath(searchRoot, cwd);
 		for (let i = 0; i < fileLines.length; i++) {
 			if (regex.test(fileLines[i])) {
-				lines.push(`${searchRoot}:${i + 1}:${fileLines[i]}`);
+				lines.push(`${shown}:${i + 1}:${fileLines[i]}`);
 			}
 		}
 		return lines.join("\n");
@@ -99,9 +125,11 @@ async function nodeGrep(pattern: string, searchRoot: string, signal?: AbortSigna
 
 export function createGrepTool(
 	cwd: string,
-	options: CodingToolsOptions = {},
+	options: GrepToolOptions = {},
 ): AgentTool<typeof grepSchema, GrepToolDetails> {
 	const jailRoot = resolveJailRoot(cwd, options.jailRoot);
+	const runRipgrep =
+		options.ripgrep ?? ((pattern, searchRoot, signal) => tryRipgrep(pattern, searchRoot, cwd, signal));
 	return {
 		name: "grep",
 		label: "Grep",
@@ -111,9 +139,16 @@ export function createGrepTool(
 			throwIfAborted(signal);
 			compilePattern(params.pattern);
 			const searchRoot = await resolveToolPath(params.path ?? ".", cwd, jailRoot);
-			const rgOut = await tryRipgrep(params.pattern, searchRoot, signal);
+			let rgOut: string | undefined;
+			try {
+				rgOut = await runRipgrep(params.pattern, searchRoot, signal);
+			} catch (error) {
+				throwIfAborted(signal);
+				throw error;
+			}
+			throwIfAborted(signal);
 			const usedRipgrep = rgOut !== undefined;
-			const raw = usedRipgrep ? rgOut : await nodeGrep(params.pattern, searchRoot, signal);
+			const raw = rgOut ?? (await nodeGrep(params.pattern, searchRoot, cwd, signal));
 			const truncation = truncateTail(raw);
 			const notice = truncationNotice(truncation, "tail");
 			const matches = raw.length === 0 ? 0 : raw.split("\n").filter((line) => line.length > 0).length;

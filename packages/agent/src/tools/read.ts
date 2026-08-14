@@ -2,14 +2,17 @@
  * Read text (numbered) or images (jpg/png/gif/webp via magic bytes).
  */
 
-import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, open, readFile, stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { z } from "zod";
 import type { AgentTool, AgentToolResult, ImageContent, TextContent } from "../types.ts";
 import { detectImageMimeType } from "./mime.ts";
 import { type CodingToolsOptions, resolveJailRoot, throwIfAborted } from "./options.ts";
 import { resolveToolPath } from "./path.ts";
-import { truncateHead, truncationNotice } from "./truncate.ts";
+import { DEFAULT_MAX_LINES, truncateHead, truncationNotice } from "./truncate.ts";
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 const readSchema = z.object({
 	path: z.string().describe("Path to the file to read (relative or absolute)"),
@@ -21,6 +24,41 @@ export interface ReadToolDetails {
 	path: string;
 	truncated?: boolean;
 	mimeType?: string;
+}
+
+async function readTextLineSlice(
+	absolutePath: string,
+	startLine: number,
+	limit: number | undefined,
+	signal?: AbortSignal,
+): Promise<{ lines: string[]; totalLines: number }> {
+	const stream = createReadStream(absolutePath, { encoding: "utf-8" });
+	const rl = createInterface({ input: stream, crlfDelay: Infinity });
+	const lines: string[] = [];
+	let totalLines = 0;
+	const maxCollect = limit !== undefined ? limit : DEFAULT_MAX_LINES;
+	try {
+		for await (const line of rl) {
+			throwIfAborted(signal);
+			totalLines += 1;
+			if (totalLines < startLine) {
+				continue;
+			}
+			if (lines.length < maxCollect) {
+				lines.push(line);
+			}
+			if (lines.length >= maxCollect) {
+				break;
+			}
+		}
+	} finally {
+		rl.close();
+		stream.destroy();
+	}
+	if (totalLines === 0 && startLine === 1) {
+		return { lines: [""], totalLines: 1 };
+	}
+	return { lines, totalLines };
 }
 
 function formatNumberedLines(lines: string[], startLine: number): string {
@@ -48,11 +86,24 @@ export function createReadTool(
 			const absolutePath = await resolveToolPath(params.path, cwd, jailRoot);
 			await access(absolutePath, constants.R_OK);
 			throwIfAborted(signal);
-			const buffer = await readFile(absolutePath);
+			const fileStat = await stat(absolutePath);
+			const head = Buffer.alloc(Math.min(16, fileStat.size));
+			if (head.length > 0) {
+				const handle = await open(absolutePath, "r");
+				try {
+					await handle.read(head, 0, head.length, 0);
+				} finally {
+					await handle.close();
+				}
+			}
 			throwIfAborted(signal);
 
-			const mimeType = detectImageMimeType(buffer);
+			const mimeType = detectImageMimeType(head);
 			if (mimeType) {
+				if (fileStat.size > MAX_IMAGE_BYTES) {
+					throw new Error(`Image too large to read (${fileStat.size} bytes): ${params.path}`);
+				}
+				const buffer = await readFile(absolutePath);
 				const image: ImageContent = {
 					type: "image",
 					data: buffer.toString("base64"),
@@ -65,28 +116,20 @@ export function createReadTool(
 				};
 			}
 
-			const raw = buffer.toString("utf-8");
-			const allLines = raw.split("\n");
-			if (raw.endsWith("\n") && allLines[allLines.length - 1] === "") {
-				allLines.pop();
-			}
-
 			const startLine = params.offset !== undefined ? Math.max(1, Math.floor(params.offset)) : 1;
-			const startIndex = startLine - 1;
-			if (startIndex >= allLines.length) {
-				throw new Error(`offset ${startLine} is past the end of ${params.path} (${allLines.length} lines)`);
-			}
-
-			let slice = allLines.slice(startIndex);
+			let limit: number | undefined;
 			if (params.limit !== undefined) {
-				const limit = Math.floor(params.limit);
+				limit = Math.floor(params.limit);
 				if (limit < 0) {
 					throw new Error("limit must be a non-negative number");
 				}
-				slice = slice.slice(0, limit);
+			}
+			const slice = await readTextLineSlice(absolutePath, startLine, limit, signal);
+			if (slice.totalLines < startLine) {
+				throw new Error(`offset ${startLine} is past the end of ${params.path} (${slice.totalLines} lines)`);
 			}
 
-			const numbered = formatNumberedLines(slice, startLine);
+			const numbered = formatNumberedLines(slice.lines, startLine);
 			const truncation = truncateHead(numbered);
 			const notice = truncationNotice(truncation, "head");
 			const text = notice ? `${truncation.content}\n${notice}` : truncation.content;

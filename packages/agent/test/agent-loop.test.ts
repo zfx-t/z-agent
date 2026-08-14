@@ -192,6 +192,37 @@ describe("runAgentLoop error / aborted", () => {
 		const withoutUpdates = collector.types().filter((t) => t !== "message_update");
 		expect(withoutUpdates.slice(-2)).toEqual(["turn_end", "agent_end"]);
 	});
+
+	it("encodes a throwing StreamFn as an error assistant without breaking the event pair", async () => {
+		const collector = createAgentEventCollector();
+		const streamFn = () => {
+			throw new Error("provider exploded");
+		};
+		const newMessages = await runAgentLoop(
+			[user("x")],
+			{ systemPrompt: "", messages: [] },
+			{ model: createScriptedStream().model, convertToLlm: identityConvert },
+			collector.sink,
+			undefined,
+			streamFn,
+		);
+
+		const assistant = newMessages.find((m) => m.role === "assistant");
+		expect(assistant && "stopReason" in assistant && assistant.stopReason).toBe("error");
+		expect(assistant && "errorMessage" in assistant ? assistant.errorMessage : "").toContain("provider exploded");
+		const withoutUpdates = collector.types().filter((t) => t !== "message_update");
+		expect(withoutUpdates).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+		expect(withoutUpdates.filter((t) => t === "agent_end")).toHaveLength(1);
+	});
 });
 
 describe("convertToLlm / transformContext", () => {
@@ -398,6 +429,33 @@ describe("streamAssistant reasoning option", () => {
 		);
 
 		expect(capturedReasoning).toBeUndefined();
+	});
+
+	it("keeps an empty getApiKey result instead of falling back to config.apiKey", async () => {
+		let capturedApiKey: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("hi")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			capturedApiKey = options?.apiKey;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+
+		await runAgentLoop(
+			[user("hi")],
+			{ systemPrompt: "", messages: [] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				apiKey: "fallback-key",
+				getApiKey: () => "",
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			wrapped,
+		);
+
+		expect(capturedApiKey).toBe("");
 	});
 });
 
@@ -882,6 +940,68 @@ describe("sequential tools (prepare → execute → after)", () => {
 			return [event.message.toolCallId];
 		});
 		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
+	});
+
+	it("fills remaining toolResults and stops when aborted mid-batch", async () => {
+		const ac = new AbortController();
+		let firstStarted: () => void = () => {};
+		const firstGate = new Promise<void>((resolve) => {
+			firstStarted = resolve;
+		});
+		const tool = echoTool(async (_id, params, signal) => {
+			if (params.value === "first") {
+				firstStarted();
+				await new Promise<void>((_resolve, reject) => {
+					if (signal?.aborted) {
+						reject(new Error("Operation aborted"));
+						return;
+					}
+					signal?.addEventListener(
+						"abort",
+						() => {
+							reject(new Error("Operation aborted"));
+						},
+						{ once: true },
+					);
+				});
+			}
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+			};
+		});
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				scriptedAssistantMessage("should not run"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		const run = runAgentLoop(
+			[user("abort-batch")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "sequential" },
+			collector.sink,
+			ac.signal,
+			scripted.streamFn,
+		);
+		await firstGate;
+		ac.abort();
+		const newMessages = await run;
+
+		const toolResults = newMessages.filter((m) => m.role === "toolResult");
+		expect(toolResults).toHaveLength(2);
+		expect(toolResults.map((m) => (m.role === "toolResult" ? m.toolCallId : ""))).toEqual(["tool-1", "tool-2"]);
+		expect(toolResults.every((m) => m.role === "toolResult" && m.isError)).toBe(true);
+		expect(newMessages.filter((m) => m.role === "assistant")).toHaveLength(1);
+		expect(scripted.getPendingResponseCount()).toBe(1);
+		expect(collector.types().filter((t) => t === "agent_end")).toHaveLength(1);
 	});
 });
 

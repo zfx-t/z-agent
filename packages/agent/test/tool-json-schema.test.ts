@@ -36,6 +36,7 @@ describe("agentToolsToLlmTools", () => {
 				text: { type: "string" },
 			},
 		});
+		expect(echo?.parameters).not.toHaveProperty("$schema");
 	});
 
 	it("returns an empty array for no tools", () => {

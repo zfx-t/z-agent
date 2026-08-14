@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { type CodingToolsOptions, resolveJailRoot, throwIfAborted } from "./options.ts";
 import { resolveToolPath } from "./path.ts";
-import { listDirectory } from "./walk.ts";
+import { isDirectory, listDirectory } from "./walk.ts";
 
 const lsSchema = z.object({
 	path: z.string().optional().describe("Directory to list (default: working directory)"),
@@ -23,6 +23,9 @@ export function createLsTool(cwd: string, options: CodingToolsOptions = {}): Age
 		async execute(_toolCallId, params, signal): Promise<AgentToolResult<LsToolDetails>> {
 			throwIfAborted(signal);
 			const absolutePath = await resolveToolPath(params.path ?? ".", cwd, jailRoot);
+			if (!(await isDirectory(absolutePath))) {
+				throw new Error(`Not a directory: ${params.path ?? "."}`);
+			}
 			const names = await listDirectory(absolutePath);
 			return {
 				content: [{ type: "text", text: names.length > 0 ? names.join("\n") : "(empty)" }],

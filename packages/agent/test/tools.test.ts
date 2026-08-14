@@ -97,6 +97,13 @@ describe("applyEdits", () => {
 		).toContain("say hi");
 		expect(applyEdits("a\r\nb\r\n", [{ oldText: "b", newText: "B" }], "f.txt")).toBe("a\r\nB\r\n");
 	});
+
+	it("fuzzy match does not rewrite unmatched lines", () => {
+		const original = "keep \u201Cthis\u201D  \nsay \u201Chello\u201D\n";
+		expect(applyEdits(original, [{ oldText: 'say "hello"', newText: "say hi" }], "f.txt")).toBe(
+			"keep \u201Cthis\u201D  \nsay hi\n",
+		);
+	});
 });
 
 describe("mime + win32 kill args", () => {
@@ -156,10 +163,61 @@ describe("coding tools", () => {
 		const findText = found.content[0] && found.content[0].type === "text" ? found.content[0].text : "";
 		expect(findText).toContain("a.ts");
 
+		await writeFile(join(dir, "sub/a.ts.bak"), "export const n = 3;\n", "utf-8");
+		const globbed = await find.execute("t4b", { pattern: "*.ts" });
+		const globText = globbed.content[0] && globbed.content[0].type === "text" ? globbed.content[0].text : "";
+		expect(globText).toContain("a.ts");
+		expect(globText).not.toContain("a.ts.bak");
+
+		const fileHit = await find.execute("t4c", { path: "sub/a.ts", pattern: "a.ts" });
+		const fileHitText = fileHit.content[0] && fileHit.content[0].type === "text" ? fileHit.content[0].text : "";
+		expect(fileHitText).toContain("a.ts");
+
 		const grep = createGrepTool(dir, { jailRoot: dir });
 		const grepped = await grep.execute("t5", { pattern: "n = 2" });
 		const grepText = grepped.content[0] && grepped.content[0].type === "text" ? grepped.content[0].text : "";
 		expect(grepText).toContain("n = 2");
+		expect(grepText).not.toMatch(/^\//m);
+	});
+
+	it("ls rejects a file path", async () => {
+		const dir = await makeCwd();
+		await writeFile(join(dir, "only.txt"), "x", "utf-8");
+		const ls = createLsTool(dir);
+		await expect(ls.execute("t1", { path: "only.txt" })).rejects.toThrow(/not a directory/i);
+	});
+
+	it("grep abort does not fall back to a full JS scan", async () => {
+		const dir = await makeCwd();
+		await writeFile(join(dir, "hit.txt"), "needle\n", "utf-8");
+		const controller = new AbortController();
+		let enteredRipgrep = () => {};
+		const inRipgrep = new Promise<void>((resolve) => {
+			enteredRipgrep = resolve;
+		});
+		const tool = createGrepTool(dir, {
+			ripgrep: async (_pattern, _root, signal) => {
+				enteredRipgrep();
+				await new Promise<void>((_resolve, reject) => {
+					if (signal?.aborted) {
+						reject(new Error("Operation aborted"));
+						return;
+					}
+					signal?.addEventListener(
+						"abort",
+						() => {
+							reject(new Error("Operation aborted"));
+						},
+						{ once: true },
+					);
+				});
+				return undefined;
+			},
+		});
+		const pending = tool.execute("t1", { pattern: "needle" }, controller.signal);
+		await inRipgrep;
+		controller.abort();
+		await expect(pending).rejects.toThrow(/aborted/i);
 	});
 
 	it("bash abort and factories", async () => {

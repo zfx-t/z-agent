@@ -7,9 +7,24 @@
  */
 
 import type { AssistantMessage, Context, Message, StreamFn, StreamOptions } from "@z-agent/ai";
+import { emptyUsage } from "@z-agent/ai";
 import type { AgentEventSink } from "./emit.ts";
 import { agentToolsToLlmTools } from "./tool-json-schema.ts";
 import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.ts";
+
+function failureAssistantMessage(config: AgentLoopConfig, error: unknown, aborted: boolean): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: emptyUsage(),
+		stopReason: aborted ? "aborted" : "error",
+		errorMessage: error instanceof Error ? error.message : String(error),
+		timestamp: Date.now(),
+	};
+}
 
 /**
  * Stream one assistant turn from the LLM into `context.messages`.
@@ -17,7 +32,7 @@ import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.ts";
  * - Sole provider I/O in the agent core (ADR-0010).
  * - Partial assistant lives in the transcript array while streaming.
  * - Failures are encoded on the final AssistantMessage (`error` / `aborted`);
- *   this function does not throw for provider failures.
+ *   this function does not throw for provider failures, including a throwing StreamFn.
  */
 export async function streamAssistant(
 	context: AgentContext,
@@ -44,7 +59,7 @@ export async function streamAssistant(
 	};
 
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) ?? config.apiKey;
 
 	const streamOptions: StreamOptions = {
 		apiKey: resolvedApiKey,
@@ -56,65 +71,77 @@ export async function streamAssistant(
 		signal,
 	};
 
-	const response = await streamFn(config.model, llmContext, streamOptions);
-
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 
-	for await (const event of response) {
-		switch (event.type) {
-			case "start":
-				partialMessage = event.partial;
-				context.messages.push(partialMessage);
-				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
-				break;
+	try {
+		const response = await streamFn(config.model, llmContext, streamOptions);
 
-			case "text_start":
-			case "text_delta":
-			case "text_end":
-			case "thinking_start":
-			case "thinking_delta":
-			case "thinking_end":
-			case "toolcall_start":
-			case "toolcall_delta":
-			case "toolcall_end":
-				if (partialMessage) {
+		for await (const event of response) {
+			switch (event.type) {
+				case "start":
 					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
-					});
-				}
-				break;
+					context.messages.push(partialMessage);
+					addedPartial = true;
+					await emit({ type: "message_start", message: { ...partialMessage } });
+					break;
 
-			case "done":
-			case "error": {
-				const finalMessage = await response.result();
-				if (addedPartial) {
-					context.messages[context.messages.length - 1] = finalMessage;
-				} else {
-					context.messages.push(finalMessage);
+				case "text_start":
+				case "text_delta":
+				case "text_end":
+				case "thinking_start":
+				case "thinking_delta":
+				case "thinking_end":
+				case "toolcall_start":
+				case "toolcall_delta":
+				case "toolcall_end":
+					if (partialMessage) {
+						partialMessage = event.partial;
+						context.messages[context.messages.length - 1] = partialMessage;
+						await emit({
+							type: "message_update",
+							assistantMessageEvent: event,
+							message: { ...partialMessage },
+						});
+					}
+					break;
+
+				case "done":
+				case "error": {
+					const finalMessage = await response.result();
+					if (addedPartial) {
+						context.messages[context.messages.length - 1] = finalMessage;
+					} else {
+						context.messages.push(finalMessage);
+					}
+					if (!addedPartial) {
+						await emit({ type: "message_start", message: { ...finalMessage } });
+					}
+					await emit({ type: "message_end", message: finalMessage });
+					return finalMessage;
 				}
-				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
-				}
-				await emit({ type: "message_end", message: finalMessage });
-				return finalMessage;
 			}
 		}
-	}
 
-	// Stream ended without a terminal event — still settle from result().
-	const finalMessage = await response.result();
-	if (addedPartial) {
-		context.messages[context.messages.length - 1] = finalMessage;
-	} else {
-		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
+		// Stream ended without a terminal event — still settle from result().
+		const finalMessage = await response.result();
+		if (addedPartial) {
+			context.messages[context.messages.length - 1] = finalMessage;
+		} else {
+			context.messages.push(finalMessage);
+			await emit({ type: "message_start", message: { ...finalMessage } });
+		}
+		await emit({ type: "message_end", message: finalMessage });
+		return finalMessage;
+	} catch (error) {
+		const finalMessage = failureAssistantMessage(config, error, signal?.aborted === true);
+		if (addedPartial) {
+			context.messages[context.messages.length - 1] = finalMessage;
+		} else {
+			context.messages.push(finalMessage);
+			await emit({ type: "message_start", message: { ...finalMessage } });
+		}
+		await emit({ type: "message_end", message: finalMessage });
+		return finalMessage;
 	}
-	await emit({ type: "message_end", message: finalMessage });
-	return finalMessage;
 }

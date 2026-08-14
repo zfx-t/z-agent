@@ -1019,6 +1019,47 @@ describe("Agent shell", () => {
 		expect(capturedReasoning).toBeUndefined();
 	});
 
+	it("does not emit a second agent_end when a listener throws on agent_end", async () => {
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("ok")],
+		});
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
+		});
+		const types: AgentEvent["type"][] = [];
+		agent.subscribe((event) => {
+			types.push(event.type);
+			if (event.type === "agent_end") {
+				throw new Error("listener failed");
+			}
+		});
+
+		await agent.prompt("hi");
+
+		expect(types.filter((t) => t === "agent_end")).toHaveLength(1);
+		expect(agent.state.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+		expect(agent.state.errorMessage).toContain("listener failed");
+	});
+
+	it("forwards samplingParams to StreamFn", async () => {
+		let captured: unknown = "unset";
+		const scripted = createScriptedStream({
+			responses: [scriptedAssistantMessage("ok")],
+		});
+		const wrapped = ((model, ctx, options) => {
+			captured = options?.samplingParams;
+			return scripted.streamFn(model, ctx, options);
+		}) satisfies typeof scripted.streamFn;
+		const agent = new Agent({
+			streamFn: wrapped,
+			initialState: { model: scripted.model },
+			samplingParams: { top_p: 0.5 },
+		});
+		await agent.prompt("hi");
+		expect(captured).toEqual({ top_p: 0.5 });
+	});
+
 	it("forwards non-off thinkingLevel as StreamFn reasoning", async () => {
 		let capturedReasoning: unknown = "unset";
 		const scripted = createScriptedStream({

@@ -10,7 +10,7 @@ import type { AgentTool, AgentToolResult } from "../types.ts";
 import { defaultKillProcessTree, killProcessTree, type ProcessKiller } from "./kill-process-tree.ts";
 import { type CodingToolsOptions, resolveJailRoot, throwIfAborted } from "./options.ts";
 import { resolveToolPath } from "./path.ts";
-import { truncateTail, truncationNotice } from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, truncateTail, truncationNotice } from "./truncate.ts";
 
 const bashSchema = z.object({
 	command: z.string().describe("Bash command to execute"),
@@ -61,12 +61,27 @@ async function runCommand(
 	});
 
 	const chunks: Buffer[] = [];
-	child.stdout?.on("data", (data: Buffer) => {
+	let captured = 0;
+	const onData = (data: Buffer) => {
 		chunks.push(data);
-	});
-	child.stderr?.on("data", (data: Buffer) => {
-		chunks.push(data);
-	});
+		captured += data.length;
+		while (captured > DEFAULT_MAX_BYTES && chunks.length > 0) {
+			const overflow = captured - DEFAULT_MAX_BYTES;
+			const first = chunks[0];
+			if (!first) {
+				break;
+			}
+			if (first.length <= overflow) {
+				chunks.shift();
+				captured -= first.length;
+			} else {
+				chunks[0] = first.subarray(overflow);
+				captured -= overflow;
+			}
+		}
+	};
+	child.stdout?.on("data", onData);
+	child.stderr?.on("data", onData);
 
 	let timedOut = false;
 	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -126,7 +141,7 @@ export function createBashTool(
 		name: "bash",
 		label: "Bash",
 		description:
-			"Execute a bash command in the working directory. Returns stdout and stderr. Output is truncated to the last 2000 lines or 50KB.",
+			"Execute a bash command in the working directory. Returns stdout and stderr. Output is truncated to the last 2000 lines or 50KB. Jail (when enabled) only requires the working directory to be inside the jail; the command itself can still access paths outside it.",
 		parameters: bashSchema,
 		async execute(_toolCallId, params, signal): Promise<AgentToolResult<BashToolDetails>> {
 			const timeoutMs = resolveTimeoutMs(params.timeout);

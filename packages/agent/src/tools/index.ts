@@ -14,6 +14,7 @@ export type { EditToolDetails, FileEdit } from "./edit.ts";
 export { applyEdits, createEditTool } from "./edit.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
 export { createFindTool } from "./find.ts";
+export type { GrepToolDetails, GrepToolOptions } from "./grep.ts";
 export { createGrepTool } from "./grep.ts";
 export { defaultKillProcessTree, killProcessTree, win32TaskkillArgs } from "./kill-process-tree.ts";
 export { createLsTool } from "./ls.ts";

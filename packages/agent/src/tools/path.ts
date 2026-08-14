@@ -24,6 +24,10 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 }
 
 function isInsideRoot(candidate: string, rootReal: string): boolean {
+	if (process.platform === "win32") {
+		candidate = candidate.toLowerCase();
+		rootReal = rootReal.toLowerCase();
+	}
 	if (candidate === rootReal) {
 		return true;
 	}
