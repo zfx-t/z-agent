@@ -11,6 +11,9 @@ In-memory agent control loop for Z Agent.
 - Agent shell: prompt mutex, subscribe, abort
 - Steering + follow-up queues
 - continue, transformContext, convertToLlm, before/afterToolCall, terminate batch, length-truncated tool batch failure
+- AgentTool → LLM Tool (JSON Schema) at streamAssistant
+- prepareNextTurn / shouldStopAfterTurn, thinkingLevel, addedToolNames passthrough
+- agentLoop / agentLoopContinue EventStream wrappers
 
 ## Effect boundaries
 
@@ -19,4 +22,4 @@ In-memory agent control loop for Z Agent.
 | Provider | `streamAssistant` → `StreamFn` |
 | Tool body | `tool.execute` |
 
-Durable intent/settle lives in a future `@z-agent/harness` package.
+Coding tools (`createAllTools` / `createCodingTools`) live in this package. Durable intent/settle is `@z-agent/harness`.

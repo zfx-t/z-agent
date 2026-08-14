@@ -14,7 +14,7 @@ v0 `@z-agent/ai` includes:
 
 - Message + assistant stream event types
 - Minimal `Model` typing
-- Faux / scripted provider for tests
+- No public mock provider; tests inject `StreamFn` locally
 - **One** production HTTP stream path (see ADR-0005)
 
 v0 excludes multi-provider catalog generation and additional production dialects.

@@ -10,17 +10,20 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 
 ## Non-goals (this plan)
 
-- Compaction, lanes, session tree, durable storage / `op.state`
 - Multi-provider catalog
 - Chat Completions dual stack
 - Thinking budgets / peripheral Agent options not required for oracle-critical paths
+- SQLite `op.state` backend (JSONL shipped; SQLite is a later ADR)
+- pi-tui native addon, ink, RPC/JSONL product mode, Bun compiled binary
 
 ## Architecture (summary)
 
 ```
-@z-agent/ai          Message, stream events, StreamFn, faux, Responses HTTP
-@z-agent/agent       AgentMessage, emit, runLoop, tools, Agent shell, queues
-@z-agent/harness     (later) intent / effect / settle + op.state
+@z-agent/ai          Message, stream events, StreamFn, Responses HTTP + thinking replay
+@z-agent/agent       AgentMessage, emit, runLoop, coding tools, Agent shell, queues
+@z-agent/tui         Alt-screen TUI (confirm, editor, session picker)
+@z-agent/cli         z-agent bin (TUI / print, sessions, skills, extensions)
+@z-agent/harness     intent / effect / settle + JSONL op.state
 ```
 
 **Effect boundaries (ADR-0010):** only `streamAssistant` (provider) and `tool.execute` (tool body).
@@ -35,14 +38,14 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - Exact-version pins; `npm install --ignore-scripts`
 - After code changes: `npm run check` and run added/changed tests
 - Do not import pi packages; may **read** pi source under `/home/zeroth/ForMe/pi` as oracle
-- Tests use faux stream; no real network in unit tests
+- Agent unit tests inject a private scripted StreamFn; no real network
 - Default queue modes and toolExecution follow pi (`one-at-a-time`, `parallel`) unless noted
 
 ## PR Plan
 
-### PR 1: AI protocol core + faux stream
+### PR 1: AI protocol core
 
-- **Description:** Implement `@z-agent/ai` foundation: LLM Message / AssistantMessage content blocks, stop reasons, usage skeleton, assistant stream event types, `EventStream` (or equivalent async iterable push stream), `StreamFn` contract, minimal `Model` type, and a **faux** scripted provider for tests. Export from package index. Keep Responses HTTP for PR 8.
+- **Description:** Implement `@z-agent/ai` foundation: LLM Message / AssistantMessage content blocks, stop reasons, usage skeleton, assistant stream event types, `EventStream` (or equivalent async iterable push stream), `StreamFn` contract, minimal `Model` type, Export from package index. Keep Responses HTTP for PR 8. Tests inject StreamFn outside the public package.
 - **Files/components affected:** packages/ai/src/**, packages/ai/test/**, packages/ai/README.md
 - **Dependencies:** None
 
@@ -54,7 +57,7 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 
 ### PR 3: streamAssistant + runLoop (tools-only inner)
 
-- **Description:** Implement `streamAssistant` (partial assistant message lives in context array; emit message_start / message_update / message_end) and `runLoop` double-while with **inner loop driven only by tool calls** (no steering/follow-up yet). Outer loop structure present but follow-up drain empty. Wire `agent_start` / `turn_start` / `turn_end` / `agent_end`. Inject `convertToLlm` and optional `transformContext`. Tests with faux stream for text-only multi-turn stop.
+- **Description:** Implement `streamAssistant` (partial assistant message lives in context array; emit message_start / message_update / message_end) and `runLoop` double-while with **inner loop driven only by tool calls** (no steering/follow-up yet). Outer loop structure present but follow-up drain empty. Wire `agent_start` / `turn_start` / `turn_end` / `agent_end`. Inject `convertToLlm` and optional `transformContext`. Tests with injected scripted StreamFn for text-only multi-turn stop.
 - **Files/components affected:** packages/agent/src/agent-loop.ts, packages/agent/src/stream-assistant.ts (or equivalent), packages/agent/test/**
 - **Dependencies:** PR 2
 
@@ -88,9 +91,22 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - **Files/components affected:** packages/ai/src/**, packages/ai/test/**, packages/ai/README.md
 - **Dependencies:** PR 1
 
+### PR 9: In-memory oracle gap-fill (ADR-0015)
+
+- **Description:** Convert zod `AgentTool` → JSON Schema `Tool` and pass tools from `streamAssistant`. Add `prepareNextTurn` / `shouldStopAfterTurn` after `turn_end` (pi order). `thinkingLevel` on AgentState mapped to `StreamOptions.reasoning`; Responses request may set `reasoning.effort`. `addedToolNames` passthrough. `agentLoop` / `agentLoopContinue` EventStream wrappers. Not L5, not thinking SSE replay, not thinkingBudgets.
+- **Files/components affected:** packages/agent/src/**, packages/agent/test/**, packages/ai/src/types.ts, packages/ai/src/openai-responses.ts, docs/**
+- **Dependencies:** PR 7, PR 8
+
+### PR 10–16: Coding product + thinking replay + L5 JSONL (ADR-0016, 0017, 0021)
+
+- **Description:** Tools in `@z-agent/agent` (seven tools, jail, images, Win process tree). `@z-agent/tui` + confirm UI. Print `-p`/`--yes`. Thinking SSE + signature replay. JSONL sessions, compaction, skills, extensions, trust. `@z-agent/harness` sandwiches stream/tool effects.
+- **Files/components affected:** packages/agent/src/tools/**, packages/tui/**, packages/cli/src/**, packages/ai/src/openai-responses.ts, packages/harness/**, docs/**
+- **Dependencies:** PR 9
+
 ## Success criteria
 
 - `npm run check` and `npm test` green on the assembled stack tip
-- Faux-driven agent tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch
+- Agent unit tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch, prepareNextTurn, shouldStopAfterTurn, tools on StreamFn Context
+- CLI/TUI/harness tests cover: tools+jail, TUI confirm keys, sessions, compaction, skills, sandwich resume, thinking SSE replay
 - No `@earendil-works/*` in package.json or imports
 - Effect boundaries documented in code comments near streamAssistant and tool.execute

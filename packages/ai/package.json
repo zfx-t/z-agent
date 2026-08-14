@@ -2,7 +2,7 @@
 	"name": "@z-agent/ai",
 	"version": "0.0.0",
 	"private": true,
-	"description": "LLM message protocol, stream events, faux provider, OpenAI Responses API stream",
+	"description": "LLM message protocol, stream events, OpenAI Responses API stream",
 	"type": "module",
 	"exports": {
 		".": {

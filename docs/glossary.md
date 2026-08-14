@@ -64,20 +64,60 @@ Messages delivered only when the agent would otherwise stop (no more tools, no s
 
 ## Effect sandwich (L5)
 
-For each effect: **intent commit** → **effect** → **settle commit**. Crash recovery reads `op.state`. Not implemented in v0. (ADR-0010)
-
-## op.state
-
-Durable total program counter for the in-flight operation. L5 only. (ADR-0010)
+For each effect: **intent commit** → **effect** → **settle commit**. Crash recovery reads `op.state`. Implemented in `@z-agent/harness` (JSONL). (ADR-0010, ADR-0021)
 
 ## Semantic oracle
 
 pi `packages/agent` agent-loop / Agent behavior used as the correctness reference without importing pi packages. Deviations require an ADR. (ADR-0001, ADR-0008)
 
-## Faux provider
-
-In-process `StreamFn` that yields scripted assistant events for tests. No network. (ADR-0004)
-
 ## Responses API path
 
 The single production HTTP stream implementation in `@z-agent/ai`: OpenAI Responses API streaming. (ADR-0005)
+
+## StreamFn (injection)
+
+Production uses Responses-backed `StreamFn`. Unit tests inject a private scripted `StreamFn` under `packages/agent/test/helpers/` — not a public package API.
+
+## prepareNextTurn
+
+Called after `turn_end` and before `shouldStopAfterTurn`. May replace context, model, or thinkingLevel for later provider calls in the same run. Does not write back to `Agent.state.thinkingLevel`. (ADR-0015)
+
+## shouldStopAfterTurn
+
+If true after a completed turn, emit `agent_end` and skip steering/follow-up polls (the loop-start steering poll still happens). (ADR-0015)
+
+## thinkingLevel
+
+`AgentState` reasoning request: `"off"` | `"minimal"` | `"low"` | `"medium"` | `"high"` | `"xhigh"` | `"max"`. `"off"` omits `StreamOptions.reasoning`. Not `thinkingBudgets`. (ADR-0015)
+
+## agentLoop / agentLoopContinue
+
+EventStream wrappers around `runAgentLoop` / `runAgentLoopContinue`. Completing event is `agent_end`. Wrapper catches rejection so `result()` does not hang. (ADR-0015)
+
+## Coding product
+
+`@z-agent/cli` + `@z-agent/tui`. Tools live in `@z-agent/agent`. Path jail and bash/write/edit confirm are stricter than pi. (ADR-0016)
+
+## thinkingSignature
+
+JSON string of a Responses reasoning item, replayed on later turns. (ADR-0017)
+
+## Session tree
+
+Append-only JSONL nodes with `id`/`parentId` under `~/.z-agent/sessions`. Product persistence, not L5. (ADR-0016)
+
+## Compaction
+
+When estimated tokens exceed `contextWindow - reserve`, or the last assistant `stopReason` is `length`, older leaf messages are summarized (via the existing `StreamFn`) and replaced by a summary plus a recent tail. (ADR-0016)
+
+## Skills / extensions / project trust
+
+`SKILL.md` files and extension modules are loaded from `~/.z-agent`, `{cwd}/.z-agent`, and `{cwd}/.agents` after the cwd is trusted (`~/.z-agent/trust.json`). Confirm UI still runs before extension `beforeToolCall`. (ADR-0016)
+
+## Path jail
+
+`realpath` prefix check so coding tools cannot escape `cwd` unless `--no-jail`. Stricter than pi `resolveToCwd`. (ADR-0016)
+
+## op.state
+
+Per-operation durable counter written by `@z-agent/harness` (`intent` → `effect` → `done`). (ADR-0010, ADR-0021)

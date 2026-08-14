@@ -14,7 +14,7 @@ The only production HTTP implementation streams the **OpenAI Responses API**.
 
 - No Chat Completions stack in v0
 - Adapter normalizes vendor events into Z’s internal assistant stream events
-- Faux provider speaks the internal events only
+- Unit tests inject a private scripted StreamFn speaking the same internal events
 
 ## Consequences
 
