@@ -2,7 +2,7 @@
 	"name": "@z-agent/cli",
 	"version": "0.0.0",
 	"private": true,
-	"description": "Minimal smoke CLI for @z-agent/agent + @z-agent/ai",
+	"description": "Local coding CLI for @z-agent/agent + @z-agent/ai",
 	"type": "module",
 	"bin": {
 		"z-agent": "./bin/z-agent.mjs"
@@ -23,6 +23,8 @@
 	"dependencies": {
 		"@z-agent/agent": "0.0.0",
 		"@z-agent/ai": "0.0.0",
+		"@z-agent/harness": "0.0.0",
+		"@z-agent/tui": "0.0.0",
 		"zod": "3.25.76"
 	}
 }

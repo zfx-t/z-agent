@@ -4,9 +4,7 @@
  * Clean-room production HTTP path: POST /responses with stream:true, parse SSE,
  * normalize vendor events into AssistantMessageEventStream.
  *
- * Minimal subset: text + function tool calls (no custom tools / grammar).
- * Request body may include `reasoning.effort` from StreamOptions.reasoning;
- * thinking SSE / signature replay is out of this slice (ADR-0015).
+ * Text + function tools + reasoning items (thinking SSE + signature replay).
  * Failures are encoded on the final AssistantMessage — StreamFn never throws for
  * business/request failures once invoked.
  *
@@ -24,6 +22,7 @@ import type {
 	StreamFn,
 	StreamOptions,
 	TextContent,
+	ThinkingContent,
 	Tool,
 	ToolCall,
 	Usage,
@@ -114,11 +113,20 @@ interface ResponsesFunctionCallOutput {
 	output: string;
 }
 
+interface ResponsesReasoningItem {
+	type: "reasoning";
+	id?: string;
+	summary?: unknown;
+	content?: unknown;
+	encrypted_content?: string;
+}
+
 type ResponsesInputItem =
 	| ResponsesEasyMessage
 	| ResponsesAssistantMessageItem
 	| ResponsesFunctionCallItem
-	| ResponsesFunctionCallOutput;
+	| ResponsesFunctionCallOutput
+	| ResponsesReasoningItem;
 
 interface ResponsesFunctionTool {
 	type: "function";
@@ -166,6 +174,8 @@ interface ResponsesStreamEvent {
 		status?: string;
 		content?: Array<{ type?: string; text?: string; refusal?: string }>;
 		phase?: string;
+		summary?: unknown;
+		encrypted_content?: string;
 	};
 	delta?: string;
 	arguments?: string;
@@ -304,8 +314,16 @@ export function convertResponsesMessages(context: Context): ResponsesInputItem[]
 						item.id = itemId;
 					}
 					items.push(item);
+				} else if (block.type === "thinking" && block.thinkingSignature) {
+					try {
+						const parsed: unknown = JSON.parse(block.thinkingSignature);
+						if (parsed && typeof parsed === "object" && (parsed as { type?: string }).type === "reasoning") {
+							items.push(parsed as ResponsesReasoningItem);
+						}
+					} catch {
+						// Skip malformed signatures rather than fail the whole convert.
+					}
 				}
-				// thinking blocks omitted in minimal subset (no encrypted_content replay)
 			}
 			if (items.length > 0) {
 				input.push(...items);
@@ -368,6 +386,7 @@ export function buildResponsesBody(
 
 	if (options?.reasoning) {
 		body.reasoning = { effort: options.reasoning };
+		body.include = ["reasoning.encrypted_content"];
 	}
 
 	// Force critical wire fields so samplingParams cannot disable streaming or rewrite input.
@@ -484,6 +503,7 @@ type StreamingToolCall = ToolCall & { partialJson?: string };
 
 type OutputSlot =
 	| { kind: "text"; block: TextContent; contentIndex: number }
+	| { kind: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { kind: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
 type ParseToolArgsResult = { ok: true; args: Record<string, unknown> } | { ok: false; error: string };
@@ -602,6 +622,14 @@ async function processResponsesEvents(
 			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
 			return slot;
 		}
+		if (item.type === "reasoning") {
+			const block: ThinkingContent = { type: "thinking", thinking: "" };
+			output.content.push(block);
+			const slot: OutputSlot = { kind: "thinking", block, contentIndex: output.content.length - 1 };
+			slots.set(outputIndex, slot);
+			stream.push({ type: "thinking_start", contentIndex: slot.contentIndex, partial: output });
+			return slot;
+		}
 		return undefined;
 	};
 
@@ -640,6 +668,13 @@ async function processResponsesEvents(
 					type: "text_end",
 					contentIndex: slot.contentIndex,
 					content: slot.block.text,
+					partial: output,
+				});
+			} else if (slot.kind === "thinking") {
+				stream.push({
+					type: "thinking_end",
+					contentIndex: slot.contentIndex,
+					content: slot.block.thinking,
 					partial: output,
 				});
 			} else {
@@ -690,6 +725,20 @@ async function processResponsesEvents(
 				if (event.item && event.output_index !== undefined) {
 					createSlot(event.output_index, event.item);
 				}
+				break;
+			}
+			case "response.reasoning_summary_text.delta":
+			case "response.reasoning_text.delta": {
+				if (event.output_index === undefined || event.delta === undefined) break;
+				const slot = getSlot(event.output_index, "thinking");
+				if (!slot) break;
+				slot.block.thinking += event.delta;
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta: event.delta,
+					partial: output,
+				});
 				break;
 			}
 			case "response.output_text.delta":
@@ -760,6 +809,17 @@ async function processResponsesEvents(
 						type: "text_end",
 						contentIndex: slot.contentIndex,
 						content: slot.block.text,
+						partial: output,
+					});
+					slots.delete(event.output_index);
+				} else if (item.type === "reasoning" && slot?.kind === "thinking") {
+					if (typeof event.item === "object" && event.item) {
+						slot.block.thinkingSignature = JSON.stringify(event.item);
+					}
+					stream.push({
+						type: "thinking_end",
+						contentIndex: slot.contentIndex,
+						content: slot.block.thinking,
 						partial: output,
 					});
 					slots.delete(event.output_index);

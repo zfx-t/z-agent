@@ -1,137 +1,67 @@
 /**
- * Minimal smoke CLI for @z-agent/agent + @z-agent/ai.
- * Uses OpenAI Responses stream (requires OPENAI_API_KEY).
+ * z-agent product CLI: TUI + print, coding tools, sessions, skills, optional L5.
  */
 
-import { Agent, type AgentEvent, type AgentTool } from "@z-agent/agent";
-import { createOpenAIResponsesModel, createOpenAIResponsesStream, type Model, type StreamFn } from "@z-agent/ai";
-import { z } from "zod";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+import { stdin } from "node:process";
+import { Agent, type AgentMessage, createAllTools } from "@z-agent/agent";
+import { createOpenAIResponsesModel, createOpenAIResponsesStream, type StreamFn } from "@z-agent/ai";
+import { JsonlOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
+import { InteractiveTui } from "@z-agent/tui";
+import { SigintAbort } from "./abort.ts";
+import { looksLikeReasoningModel, parseArgs, printHelp, resolveModelId } from "./args.ts";
+import { applyCompactionToSession, needsCompaction } from "./compaction.ts";
+import { createConfirmGate } from "./confirm.ts";
+import { composeBefore, discoverExtensionPaths, type Extension, loadExtension } from "./extensions.ts";
+import { runInteractive } from "./interactive.ts";
+import { runPrint } from "./print.ts";
+import {
+	appendMessage,
+	createSession,
+	latestSessionId,
+	listSessionIds,
+	loadSession,
+	messagesOnLeaf,
+	type SessionRecord,
+	saveSession,
+} from "./sessions.ts";
+import { formatSkillsPrompt, loadSkills } from "./skills.ts";
+import { buildCodingSystemPrompt } from "./system-prompt.ts";
+import { askYesNo, ensureProjectTrust } from "./trust.ts";
 
-const DEFAULT_PROMPT = "Say hello, then echo the word hi with the echo tool.";
-
-const echoSchema = z.object({
-	text: z.string().describe("Text to echo back"),
-});
-
-function createEchoTool(): AgentTool<typeof echoSchema, { text: string }> {
-	return {
-		name: "echo",
-		label: "Echo",
-		description: "Echo text back to the conversation",
-		parameters: echoSchema,
-		async execute(_toolCallId, params) {
-			return {
-				content: [{ type: "text", text: `echo: ${params.text}` }],
-				details: { text: params.text },
-			};
-		},
-	};
+async function readStdinText(): Promise<string> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of stdin) {
+		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+	}
+	return Buffer.concat(chunks).toString("utf-8").trim();
 }
 
-function printEvent(event: AgentEvent): void {
-	switch (event.type) {
-		case "agent_start":
-			console.log("[agent_start]");
-			break;
-		case "turn_start":
-			console.log("[turn_start]");
-			break;
-		case "message_start": {
-			const role = "role" in event.message ? event.message.role : "?";
-			console.log(`[message_start] role=${role}`);
-			break;
-		}
-		case "message_end": {
-			const msg = event.message;
-			if (msg && typeof msg === "object" && "role" in msg && msg.role === "assistant" && "content" in msg) {
-				const texts = Array.isArray(msg.content)
-					? msg.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text)
-					: [];
-				if (texts.length > 0) {
-					console.log(`[assistant] ${texts.join("")}`);
-				}
-			}
-			if (msg && typeof msg === "object" && "role" in msg && msg.role === "toolResult" && "content" in msg) {
-				const texts = Array.isArray(msg.content)
-					? msg.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text)
-					: [];
-				if (texts.length > 0) {
-					console.log(`[toolResult] ${texts.join("")}`);
-				}
-			}
-			break;
-		}
-		case "tool_execution_start":
-			console.log(`[tool_start] ${event.toolName} ${JSON.stringify(event.args)}`);
-			break;
-		case "tool_execution_end":
-			console.log(`[tool_end] ${event.toolName} error=${event.isError}`);
-			break;
-		case "turn_end":
-			console.log("[turn_end]");
-			break;
-		case "agent_end":
-			console.log("[agent_end]");
-			break;
-		default:
-			break;
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
-function parseArgs(argv: string[]): {
-	prompt: string;
-	help: boolean;
-	error?: string;
-} {
-	let help = false;
-	let error: string | undefined;
-	const rest: string[] = [];
-	for (const arg of argv) {
-		if (arg === "--help" || arg === "-h") {
-			help = true;
-		} else if (arg.startsWith("-")) {
-			error = `Unknown flag: ${arg}`;
-		} else {
-			rest.push(arg);
-		}
+function syncSession(session: SessionRecord, messages: AgentMessage[]): void {
+	const have = messagesOnLeaf(session).length;
+	for (const message of messages.slice(have)) {
+		appendMessage(session, message);
 	}
-	return {
-		prompt: rest.length > 0 ? rest.join(" ") : DEFAULT_PROMPT,
-		help,
-		error,
-	};
-}
-
-function printHelp(): void {
-	console.log(`z-agent — minimal agent smoke CLI
-
-Usage:
-  z-agent [prompt...]   OpenAI Responses stream + echo tool
-  z-agent --help
-
-Env:
-  OPENAI_API_KEY   Required
-  OPENAI_BASE_URL  Optional API base URL
-`);
-}
-
-function createStreamSetup(apiKey: string): { streamFn: StreamFn; model: Model; apiKey: string } {
-	const streamFn = createOpenAIResponsesStream({
-		apiKey,
-		baseUrl: process.env.OPENAI_BASE_URL,
-	});
-	const model = createOpenAIResponsesModel({ id: "gpt-4.1-mini" });
-	return { streamFn, model, apiKey };
 }
 
 async function main(): Promise<void> {
-	const { prompt, help, error } = parseArgs(process.argv.slice(2));
-	if (error) {
-		console.error(error);
-		printHelp();
+	const args = parseArgs(process.argv.slice(2));
+	if (args.error) {
+		console.error(args.error);
+		printHelp(console.error);
 		process.exit(2);
 	}
-	if (help) {
+	if (args.help) {
 		printHelp();
 		process.exit(0);
 	}
@@ -142,32 +72,180 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	const { streamFn, model } = createStreamSetup(apiKey);
-	const tools = [createEchoTool()];
+	const cwd = args.cwd ?? process.cwd();
+	const modelId = resolveModelId(args);
+	const jail = !args.noJail;
+	const isTty = Boolean(stdin.isTTY);
+	const usePrint = args.print || !isTty || args.promptParts.length > 0;
+	const autoYes = usePrint || args.yes;
 
-	console.log(`[mode] openai-responses model=${model.id}`);
+	if (looksLikeReasoningModel(modelId) && args.verbose) {
+		console.error(`[model] ${modelId} reasoning replay enabled`);
+	}
 
-	const agent = new Agent({
-		streamFn,
+	let prompt = args.promptParts.join(" ").trim();
+	if (usePrint && !prompt && !isTty) {
+		prompt = await readStdinText();
+		if (!prompt && !args.resume && !args.continueSession && !args.session) {
+			console.error("error: prompt required (pass arguments, or pipe stdin)");
+			process.exit(2);
+		}
+	}
+
+	const sessionRoot = args.sessionDir;
+	let session: SessionRecord;
+	if (args.session) {
+		session = await loadSession(cwd, args.session, sessionRoot);
+	} else if (args.resume || args.continueSession) {
+		const id = await latestSessionId(cwd, sessionRoot);
+		session = id ? await loadSession(cwd, id, sessionRoot) : createSession(cwd);
+	} else {
+		session = createSession(cwd);
+	}
+
+	const trusted =
+		(await pathExists(join(cwd, ".z-agent"))) || (await pathExists(join(cwd, ".agents")))
+			? await ensureProjectTrust(cwd, async () => {
+					if (autoYes) {
+						return true;
+					}
+					return await askYesNo(`Trust project resources in ${cwd}?`);
+				})
+			: true;
+
+	const skills = trusted ? await loadSkills(cwd) : [];
+	const extensions: Extension[] = [];
+	if (trusted) {
+		for (const extPath of await discoverExtensionPaths(cwd)) {
+			extensions.push(await loadExtension(extPath, cwd));
+		}
+		for (const extPath of args.extensionPaths) {
+			extensions.push(await loadExtension(extPath, cwd));
+		}
+	}
+
+	let streamFn: StreamFn = createOpenAIResponsesStream({
 		apiKey,
-		initialState: {
-			model,
-			systemPrompt: "You are a tiny demo agent. Prefer the echo tool when asked to echo.",
-			tools,
+		baseUrl: process.env.OPENAI_BASE_URL,
+	});
+	let tools = createAllTools(cwd, { jailRoot: jail ? cwd : false });
+	if (args.durable) {
+		const store = new JsonlOpStore(join(cwd, ".z-agent", "harness"));
+		streamFn = wrapStreamFn(streamFn, store);
+		tools = wrapTools(tools, store);
+	}
+
+	let agent!: Agent;
+	const abort = new SigintAbort(() => agent);
+	const tui = !usePrint
+		? new InteractiveTui({
+				status: () => `z-agent model=${modelId} cwd=${cwd}`,
+				onInterrupt: () => {
+					abort.handleSigint();
+				},
+			})
+		: undefined;
+
+	if (tui && !args.session && !args.resume && !args.continueSession) {
+		const ids = await listSessionIds(cwd, sessionRoot);
+		if (ids.length > 0) {
+			tui.start();
+			const index = await tui.pickFromList("Sessions", ["(new session)", ...ids], { cancelValue: 0 });
+			if (index > 0) {
+				session = await loadSession(cwd, ids[index - 1], sessionRoot);
+			}
+		}
+	}
+
+	const confirmGate = createConfirmGate({
+		autoYes,
+		ask: async (toolName, toolArgs) => {
+			if (!tui) {
+				return "once";
+			}
+			return await tui.confirmTool(toolName, toolArgs);
 		},
 	});
 
-	agent.subscribe((event) => {
-		printEvent(event);
+	const model = createOpenAIResponsesModel({ id: modelId });
+	agent = new Agent({
+		streamFn,
+		apiKey,
+		beforeToolCall: composeBefore(confirmGate, extensions),
+		afterToolCall: async (context, signal) => {
+			for (const ext of extensions) {
+				const result = await ext.afterToolCall?.(context, signal);
+				if (result) {
+					return result;
+				}
+			}
+			return undefined;
+		},
+		initialState: {
+			model,
+			thinkingLevel: looksLikeReasoningModel(modelId) ? "medium" : "off",
+			systemPrompt: `${buildCodingSystemPrompt(cwd, jail)}${formatSkillsPrompt(skills)}`,
+			tools,
+			messages: messagesOnLeaf(session),
+		},
 	});
 
-	console.log(`[prompt] ${prompt}`);
-	await agent.prompt(prompt);
+	abort.attach();
 
-	if (agent.state.errorMessage) {
-		console.error(`[error] ${agent.state.errorMessage}`);
+	const compactNow = async () => {
+		const { kept, summary } = await applyCompactionToSession(session, agent.state.messages, {
+			contextWindow: agent.state.model.contextWindow,
+			streamFn,
+			model: agent.state.model,
+		});
+		agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: summary }], timestamp: Date.now() },
+			...kept,
+		];
+	};
+
+	const persist = async () => {
+		syncSession(session, agent.state.messages);
+		if (needsCompaction(agent.state.messages, { contextWindow: agent.state.model.contextWindow })) {
+			await compactNow();
+		}
+		await saveSession(session, sessionRoot);
+	};
+
+	if (usePrint) {
+		if (!prompt) {
+			console.error("error: prompt required");
+			process.exit(2);
+		}
+		console.error(`[mode] print model=${modelId} cwd=${cwd}`);
+		await runPrint(agent, prompt, args.verbose);
+		await persist();
+		abort.detach();
+		if (agent.state.errorMessage) {
+			console.error(`[error] ${agent.state.errorMessage}`);
+			process.exit(1);
+		}
+		return;
+	}
+
+	if (!tui) {
 		process.exit(1);
 	}
+	await runInteractive({
+		agent,
+		tui,
+		onCompact: async () => {
+			await compactNow();
+			await saveSession(session, sessionRoot);
+		},
+		listSessions: async () => await listSessionIds(cwd, sessionRoot),
+		onLoadSession: async (id) => {
+			session = await loadSession(cwd, id, sessionRoot);
+			return messagesOnLeaf(session);
+		},
+	});
+	await persist();
+	abort.detach();
 }
 
 main().catch((err: unknown) => {

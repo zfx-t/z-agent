@@ -1,26 +1,17 @@
 # @z-agent/cli
 
-Minimal smoke bin wiring `@z-agent/agent` + `@z-agent/ai` (OpenAI Responses).
-
-## Run
+Coding agent: TUI (default on TTY) or print (`-p` / non-TTY). Tools come from `@z-agent/agent`.
 
 ```bash
-# from monorepo root
 export OPENAI_API_KEY=sk-...
-# optional: export OPENAI_BASE_URL=https://api.openai.com/v1
-
-npm run z-agent
-npx z-agent "use the echo tool"
+npx z-agent
+npx z-agent -p --yes "list files and summarize README.md"
 ```
 
-## Env
+## Flags
 
-| Variable | Required | Notes |
-|----------|----------|--------|
-| `OPENAI_API_KEY` | yes | Responses API key |
-| `OPENAI_BASE_URL` | no | API base URL |
+`--cwd` `--model` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable`
 
-## Notes
+Print / non-TTY defaults to `--yes`. TUI asks before `bash` / `write` / `edit`. Path jail is on unless `--no-jail`.
 
-- One demo tool: `echo` (zod + real execute)
-- No offline mock path — always hits the Responses stream
+Slash: `/exit` `/reset` `/compact` `/sessions` (`/resume`). TUI session picker runs at start when sessions already exist for the cwd.

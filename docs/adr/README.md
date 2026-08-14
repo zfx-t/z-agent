@@ -17,6 +17,10 @@
 | [0013](0013-zod-tools.md) | zod for tool schemas | Accepted |
 | [0014](0014-license-privacy.md) | MIT, private packages | Accepted |
 | [0015](0015-post-v0-in-memory-surface.md) | Post-v0 in-memory oracle surface | Accepted |
+| [0016](0016-coding-product.md) | Coding product surface (TUI-first) | Accepted |
+| [0016-cli](0016-coding-cli.md) | Coding CLI slice | Superseded |
+| [0017](0017-thinking-sse-replay.md) | Responses thinking SSE + replay | Accepted |
+| [0021](0021-l5-jsonl-harness.md) | L5 JSONL harness | Accepted |
 
 ## Format
 

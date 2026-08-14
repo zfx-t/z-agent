@@ -7,7 +7,7 @@ LLM message protocol and streaming adapters for Z Agent.
 - Canonical LLM `Message` / assistant stream event types
 - `StreamFn` contract (failures encoded in stream, not thrown)
 - Production path: **OpenAI Responses API** streaming
-- Optional request `reasoning.effort` from `StreamOptions.reasoning` (no thinking SSE parse yet)
+- Optional request `reasoning.effort` plus thinking SSE parse and signature replay (ADR-0017)
 
 ## Non-goals
 

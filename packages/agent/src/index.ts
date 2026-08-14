@@ -24,6 +24,25 @@ export {
 } from "./emit.ts";
 export { streamAssistant } from "./stream-assistant.ts";
 export { agentToolsToLlmTools } from "./tool-json-schema.ts";
+export type { CodingToolsOptions } from "./tools/index.ts";
+export {
+	applyEdits,
+	assertInsideJail,
+	createAllTools,
+	createBashTool,
+	createCodingTools,
+	createEditTool,
+	createFindTool,
+	createGrepTool,
+	createLsTool,
+	createReadTool,
+	createWriteTool,
+	detectImageMimeType,
+	killProcessTree,
+	resolveToCwd,
+	win32TaskkillArgs,
+	withFileMutationQueue,
+} from "./tools/index.ts";
 export type {
 	AfterToolCallContext,
 	AfterToolCallResult,

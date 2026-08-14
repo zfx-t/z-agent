@@ -10,17 +10,20 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 
 ## Non-goals (this plan)
 
-- Compaction, lanes, session tree, durable storage / `op.state`
 - Multi-provider catalog
 - Chat Completions dual stack
 - Thinking budgets / peripheral Agent options not required for oracle-critical paths
+- SQLite `op.state` backend (JSONL shipped; SQLite is a later ADR)
+- pi-tui native addon, ink, RPC/JSONL product mode, Bun compiled binary
 
 ## Architecture (summary)
 
 ```
-@z-agent/ai          Message, stream events, StreamFn, Responses HTTP
-@z-agent/agent       AgentMessage, emit, runLoop, tools, Agent shell, queues
-@z-agent/harness     (later) intent / effect / settle + op.state
+@z-agent/ai          Message, stream events, StreamFn, Responses HTTP + thinking replay
+@z-agent/agent       AgentMessage, emit, runLoop, coding tools, Agent shell, queues
+@z-agent/tui         Alt-screen TUI (confirm, editor, session picker)
+@z-agent/cli         z-agent bin (TUI / print, sessions, skills, extensions)
+@z-agent/harness     intent / effect / settle + JSONL op.state
 ```
 
 **Effect boundaries (ADR-0010):** only `streamAssistant` (provider) and `tool.execute` (tool body).
@@ -94,9 +97,16 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - **Files/components affected:** packages/agent/src/**, packages/agent/test/**, packages/ai/src/types.ts, packages/ai/src/openai-responses.ts, docs/**
 - **Dependencies:** PR 7, PR 8
 
+### PR 10–16: Coding product + thinking replay + L5 JSONL (ADR-0016, 0017, 0021)
+
+- **Description:** Tools in `@z-agent/agent` (seven tools, jail, images, Win process tree). `@z-agent/tui` + confirm UI. Print `-p`/`--yes`. Thinking SSE + signature replay. JSONL sessions, compaction, skills, extensions, trust. `@z-agent/harness` sandwiches stream/tool effects.
+- **Files/components affected:** packages/agent/src/tools/**, packages/tui/**, packages/cli/src/**, packages/ai/src/openai-responses.ts, packages/harness/**, docs/**
+- **Dependencies:** PR 9
+
 ## Success criteria
 
 - `npm run check` and `npm test` green on the assembled stack tip
 - Agent unit tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch, prepareNextTurn, shouldStopAfterTurn, tools on StreamFn Context
+- CLI/TUI/harness tests cover: tools+jail, TUI confirm keys, sessions, compaction, skills, sandwich resume, thinking SSE replay
 - No `@earendil-works/*` in package.json or imports
 - Effect boundaries documented in code comments near streamAssistant and tool.execute

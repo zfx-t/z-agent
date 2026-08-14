@@ -22,4 +22,4 @@ In-memory agent control loop for Z Agent.
 | Provider | `streamAssistant` → `StreamFn` |
 | Tool body | `tool.execute` |
 
-Durable intent/settle lives in a future `@z-agent/harness` package.
+Coding tools (`createAllTools` / `createCodingTools`) live in this package. Durable intent/settle is `@z-agent/harness`.

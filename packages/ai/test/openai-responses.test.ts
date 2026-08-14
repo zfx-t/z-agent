@@ -281,9 +281,72 @@ describe("convertResponsesMessages / tools", () => {
 	it("buildResponsesBody sets reasoning.effort from options.reasoning", () => {
 		const withEffort = buildResponsesBody(model, { messages: [] }, { reasoning: "low" });
 		expect(withEffort.reasoning).toEqual({ effort: "low" });
+		expect(withEffort.include).toEqual(["reasoning.encrypted_content"]);
 
 		const without = buildResponsesBody(model, { messages: [] });
 		expect(without.reasoning).toBeUndefined();
+	});
+
+	it("replays thinkingSignature as a reasoning input item", () => {
+		const signature = JSON.stringify({
+			type: "reasoning",
+			id: "rs_1",
+			encrypted_content: "enc",
+			summary: [{ type: "summary_text", text: "plan" }],
+		});
+		const input = convertResponsesMessages({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "plan", thinkingSignature: signature },
+						{ type: "text", text: "ok" },
+					],
+					api: "openai-responses",
+					provider: "openai",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+			],
+		});
+		expect(input.some((item) => typeof item === "object" && "type" in item && item.type === "reasoning")).toBe(true);
+	});
+
+	it("omits thinking blocks that have no thinkingSignature", () => {
+		const input = convertResponsesMessages({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "plan" },
+						{ type: "text", text: "ok" },
+					],
+					api: "openai-responses",
+					provider: "openai",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+			],
+		});
+		expect(input.some((item) => typeof item === "object" && "type" in item && item.type === "reasoning")).toBe(false);
 	});
 });
 
@@ -672,5 +735,41 @@ describe("streamOpenAIResponses", () => {
 		});
 		await collect(await streamFn(model, emptyContext));
 		expect(url).toBe("https://example.test/v1/responses");
+	});
+
+	it("parses reasoning SSE and stores thinkingSignature", async () => {
+		const item = {
+			type: "reasoning",
+			id: "rs_1",
+			encrypted_content: "enc",
+			summary: [{ type: "summary_text", text: "think" }],
+		};
+		const sse = sseFromEvents([
+			{ type: "response.created", response: { id: "resp_r", status: "in_progress" } },
+			{ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1" } },
+			{ type: "response.reasoning_summary_text.delta", output_index: 0, delta: "think" },
+			{ type: "response.output_item.done", output_index: 0, item },
+			{
+				type: "response.output_item.added",
+				output_index: 1,
+				item: { type: "message", id: "msg_r", status: "in_progress", content: [] },
+			},
+			{ type: "response.output_text.delta", output_index: 1, delta: "hi" },
+			{
+				type: "response.output_item.done",
+				output_index: 1,
+				item: { type: "message", id: "msg_r", status: "completed", content: [{ type: "output_text", text: "hi" }] },
+			},
+			{ type: "response.completed", response: { id: "resp_r", status: "completed" } },
+		]);
+		const stream = streamOpenAIResponses(model, emptyContext, { apiKey: "sk" }, { fetch: mockFetchOk(sse) });
+		const events = await collect(stream);
+		expect(events.some((event) => event.type === "thinking_start")).toBe(true);
+		expect(events.some((event) => event.type === "thinking_delta" && event.delta === "think")).toBe(true);
+		const final = await stream.result();
+		const thinking = final.content.find((block) => block.type === "thinking");
+		expect(thinking && thinking.type === "thinking" ? thinking.thinkingSignature : undefined).toBe(
+			JSON.stringify(item),
+		);
 	});
 });

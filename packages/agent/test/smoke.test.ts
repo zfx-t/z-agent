@@ -6,6 +6,8 @@ import {
 	agentLoopContinue,
 	composeAgentEventSinks,
 	createAgentEventCollector,
+	createAllTools,
+	createCodingTools,
 	emitAgentEvent,
 	runAgentLoop,
 	runAgentLoopContinue,
@@ -29,6 +31,8 @@ describe("@z-agent/agent", () => {
 		expect(typeof runLoop).toBe("function");
 		expect(typeof streamAssistant).toBe("function");
 		expect(typeof Agent).toBe("function");
+		expect(typeof createCodingTools).toBe("function");
+		expect(typeof createAllTools).toBe("function");
 		const c = createAgentEventCollector();
 		await emitAgentEvent(c.sink, { type: "agent_start" });
 		expect(c.types()).toEqual(["agent_start"]);
