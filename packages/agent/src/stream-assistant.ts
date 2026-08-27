@@ -113,8 +113,6 @@ export async function streamAssistant(
 						context.messages[context.messages.length - 1] = finalMessage;
 					} else {
 						context.messages.push(finalMessage);
-					}
-					if (!addedPartial) {
 						await emit({ type: "message_start", message: { ...finalMessage } });
 					}
 					await emit({ type: "message_end", message: finalMessage });
