@@ -1,5 +1,9 @@
 export type TuiRunState = "ready" | "running";
 
+export type TuiFocus = "editor" | "transcript";
+
+export type TuiInspectorView = "summary" | "output" | "diff";
+
 export interface TuiHeaderState {
 	cwd: string;
 	model: string;
@@ -13,6 +17,8 @@ export type TuiToolState = "running" | "success" | "error";
 export interface TuiToolSnapshot {
 	toolCallId: string;
 	toolName: string;
+	/** Original tool input, retained only for terminal presentation. */
+	input?: unknown;
 	argsText: string;
 	state: TuiToolState;
 	outputText?: string;
@@ -31,6 +37,8 @@ export interface TuiTranscriptEntry {
 
 export interface TuiInspectorState {
 	tool: TuiToolSnapshot;
+	view?: TuiInspectorView;
+	scrollOffset?: number;
 }
 
 export interface TuiToolUpdate {

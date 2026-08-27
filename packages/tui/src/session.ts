@@ -3,8 +3,17 @@ import { confirmChoiceFromKey, formatConfirmPrompt } from "./confirm.ts";
 import { EditorBuffer } from "./editor.ts";
 import { type Key, parseInputChunk } from "./keys.ts";
 import { renderFrame } from "./layout.ts";
-import type { TuiHeaderState, TuiToolSnapshot, TuiToolUpdate, TuiTranscriptEntry } from "./model.ts";
+import type {
+	TuiFocus,
+	TuiHeaderState,
+	TuiInspectorState,
+	TuiInspectorView,
+	TuiToolSnapshot,
+	TuiToolUpdate,
+	TuiTranscriptEntry,
+} from "./model.ts";
 import { LineScreen } from "./screen.ts";
+import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
 export interface InteractiveTuiOptions {
 	stdin?: NodeJS.ReadStream;
@@ -45,6 +54,13 @@ export class InteractiveTui {
 	private readonly fixedRows?: number;
 	private readonly colors: boolean;
 	private streaming = false;
+	private focus: TuiFocus = "editor";
+	private selectedToolCallId: string | undefined;
+	private expandedToolCallId: string | undefined;
+	private inspectorView: TuiInspectorView = "summary";
+	private inspectorScrollOffset = 0;
+	private followingLatest = true;
+	private unseenEventCount = 0;
 	private confirm: { request: ConfirmRequest; resolve: (choice: ConfirmChoice) => void } | undefined;
 	private picker:
 		| {
@@ -133,6 +149,7 @@ export class InteractiveTui {
 	}
 
 	appendAssistantDelta(delta: string): void {
+		this.recordIncomingEvent();
 		const last = this.transcript[this.transcript.length - 1];
 		if (!last || last.kind !== "assistant") {
 			this.transcript.push(this.entry("assistant", delta));
@@ -148,6 +165,7 @@ export class InteractiveTui {
 	}
 
 	appendNotice(kind: "warning" | "error", text: string): void {
+		this.recordIncomingEvent();
 		this.transcript.push(this.entry(kind, text));
 		this.repaint();
 	}
@@ -168,9 +186,11 @@ export class InteractiveTui {
 	}
 
 	appendToolStart(toolCallId: string, toolName: string, args: unknown): void {
+		this.recordIncomingEvent();
 		const tool: TuiToolSnapshot = {
 			toolCallId,
 			toolName,
+			input: args,
 			argsText: compactJson(args, 180),
 			state: "running",
 		};
@@ -184,6 +204,7 @@ export class InteractiveTui {
 		if (!entry?.tool) {
 			return;
 		}
+		this.recordIncomingEvent();
 		Object.assign(entry.tool, update);
 		this.repaint();
 	}
@@ -193,6 +214,7 @@ export class InteractiveTui {
 		if (!entry?.tool) {
 			return;
 		}
+		this.recordIncomingEvent();
 		entry.tool.state = isError ? "error" : "success";
 		entry.tool.outputText = output.trim();
 		entry.tool.detailsText = detailsText;
@@ -218,6 +240,7 @@ export class InteractiveTui {
 	}
 
 	appendThinkingDelta(delta: string): void {
+		this.recordIncomingEvent();
 		const last = this.transcript[this.transcript.length - 1];
 		if (!last || last.kind !== "thinking") {
 			this.transcript.push(this.entry("thinking", delta));
@@ -346,6 +369,15 @@ export class InteractiveTui {
 			}
 			return;
 		}
+		if (key.type === "tab") {
+			this.toggleFocus();
+			this.repaint();
+			return;
+		}
+		if (this.focus === "transcript") {
+			this.dispatchTranscriptKey(key);
+			return;
+		}
 		if (key.type === "ctrl" && key.value === "p" && this.editor.value.length === 0) {
 			const resolve = this.promptResolve;
 			this.promptResolve = undefined;
@@ -419,6 +451,135 @@ export class InteractiveTui {
 			}
 		}
 		this.repaint();
+	}
+
+	private toggleFocus(): void {
+		if (this.focus === "transcript") {
+			this.focus = "editor";
+			return;
+		}
+		const latest = this.toolEntries().at(-1)?.tool?.toolCallId;
+		if (latest === undefined) {
+			return;
+		}
+		this.focus = "transcript";
+		this.selectedToolCallId = latest;
+		this.followingLatest = true;
+		this.unseenEventCount = 0;
+	}
+
+	private dispatchTranscriptKey(key: Key): void {
+		if (key.type === "escape" || key.type === "tab") {
+			this.focus = "editor";
+			this.repaint();
+			return;
+		}
+		if (key.type === "up") {
+			this.moveToolSelection(-1);
+		} else if (key.type === "down") {
+			this.moveToolSelection(1);
+		} else if (key.type === "enter") {
+			this.toggleInspector();
+		} else if (key.type === "left") {
+			this.moveInspectorView(-1);
+		} else if (key.type === "right") {
+			this.moveInspectorView(1);
+		} else if (key.type === "pageUp") {
+			this.moveInspectorScroll(-6);
+		} else if (key.type === "pageDown") {
+			this.moveInspectorScroll(6);
+		} else if (key.type === "home") {
+			if (this.activeInspector()) {
+				this.inspectorScrollOffset = 0;
+			} else {
+				this.selectBoundaryTool("start");
+			}
+		} else if (key.type === "end") {
+			if (this.activeInspector()) {
+				this.inspectorScrollOffset = this.inspectorMaxScroll();
+			} else {
+				this.selectBoundaryTool("end");
+			}
+		}
+		this.repaint();
+	}
+
+	private toolEntries(): TuiTranscriptEntry[] {
+		return this.transcript.filter(
+			(entry): entry is TuiTranscriptEntry => entry.kind === "tool" && entry.tool !== undefined,
+		);
+	}
+
+	private moveToolSelection(direction: -1 | 1): void {
+		const entries = this.toolEntries();
+		if (entries.length === 0) {
+			return;
+		}
+		const current = entries.findIndex((entry) => entry.tool?.toolCallId === this.selectedToolCallId);
+		const next = current < 0 ? entries.length - 1 : Math.max(0, Math.min(entries.length - 1, current + direction));
+		this.selectedToolCallId = entries[next]?.tool?.toolCallId;
+		const isLatest = next === entries.length - 1;
+		this.followingLatest = isLatest;
+		if (isLatest) {
+			this.unseenEventCount = 0;
+		}
+	}
+
+	private selectBoundaryTool(boundary: "start" | "end"): void {
+		const entries = this.toolEntries();
+		if (entries.length === 0) {
+			return;
+		}
+		const index = boundary === "start" ? 0 : entries.length - 1;
+		this.selectedToolCallId = entries[index]?.tool?.toolCallId;
+		this.followingLatest = boundary === "end";
+		if (this.followingLatest) {
+			this.unseenEventCount = 0;
+		}
+	}
+
+	private toggleInspector(): void {
+		if (this.selectedToolCallId === undefined) {
+			return;
+		}
+		if (this.expandedToolCallId === this.selectedToolCallId) {
+			this.expandedToolCallId = undefined;
+			this.inspectorScrollOffset = 0;
+			return;
+		}
+		this.expandedToolCallId = this.selectedToolCallId;
+		this.inspectorView = "summary";
+		this.inspectorScrollOffset = 0;
+	}
+
+	private moveInspectorView(direction: -1 | 1): void {
+		const inspector = this.activeInspector();
+		if (!inspector || inspector.tool.toolCallId !== this.selectedToolCallId) {
+			return;
+		}
+		const views = availableInspectorViews(inspector.tool);
+		const current = views.indexOf(this.inspectorView);
+		const next = Math.max(0, Math.min(views.length - 1, current + direction));
+		this.inspectorView = views[next] ?? "summary";
+		this.inspectorScrollOffset = 0;
+	}
+
+	private moveInspectorScroll(delta: number): void {
+		if (!this.activeInspector()) {
+			return;
+		}
+		this.inspectorScrollOffset = Math.max(0, Math.min(this.inspectorMaxScroll(), this.inspectorScrollOffset + delta));
+	}
+
+	private inspectorMaxScroll(): number {
+		const inspector = this.activeInspector();
+		return inspector ? Math.max(0, detailLines(inspector.tool, this.inspectorView).length - 1) : 0;
+	}
+
+	private recordIncomingEvent(): void {
+		if (!this.followingLatest) {
+			this.unseenEventCount += 1;
+		}
 	}
 
 	private finishPicker(index: number): void {
@@ -530,7 +691,11 @@ export class InteractiveTui {
 							query: this.picker.query,
 						}
 					: undefined,
-				inspector: this.latestInspector(),
+				inspector: this.activeInspector(),
+				focus: this.focus,
+				selectedToolCallId: this.selectedToolCallId,
+				followLatest: this.followingLatest,
+				unseenEventCount: this.unseenEventCount,
 				streaming: this.streaming,
 				colors: this.colors,
 			},
@@ -540,11 +705,14 @@ export class InteractiveTui {
 		this.screen.paint(lines);
 	}
 
-	private latestInspector() {
+	private activeInspector(): TuiInspectorState | undefined {
+		if (this.expandedToolCallId === undefined) {
+			return undefined;
+		}
 		for (let index = this.transcript.length - 1; index >= 0; index -= 1) {
 			const entry = this.transcript[index];
-			if (entry?.kind === "tool" && entry.tool) {
-				return { tool: entry.tool };
+			if (entry?.kind === "tool" && entry.tool?.toolCallId === this.expandedToolCallId) {
+				return { tool: entry.tool, view: this.inspectorView, scrollOffset: this.inspectorScrollOffset };
 			}
 		}
 		return undefined;

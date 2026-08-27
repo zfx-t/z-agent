@@ -5,7 +5,15 @@ export type { Key } from "./keys.ts";
 export { parseInputChunk, parseKey } from "./keys.ts";
 export type { TuiFrameState, TuiPickerState } from "./layout.ts";
 export { renderFrame } from "./layout.ts";
-export type { TuiHeaderState, TuiInspectorState, TuiToolSnapshot, TuiToolUpdate, TuiTranscriptEntry } from "./model.ts";
+export type {
+	TuiFocus,
+	TuiHeaderState,
+	TuiInspectorState,
+	TuiInspectorView,
+	TuiToolSnapshot,
+	TuiToolUpdate,
+	TuiTranscriptEntry,
+} from "./model.ts";
 export { LineScreen } from "./screen.ts";
 export type { InteractiveTuiOptions, PickListOptions } from "./session.ts";
 export { InteractiveTui } from "./session.ts";

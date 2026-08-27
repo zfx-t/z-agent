@@ -8,9 +8,12 @@ import { InteractiveTui } from "../src/session.ts";
 describe("keys + editor + confirm", () => {
 	it("parses enter, editing keys, and alternate-enter", () => {
 		expect(parseKey("\r")).toEqual({ type: "enter" });
+		expect(parseKey("\t")).toEqual({ type: "tab" });
 		expect(parseKey("\x1b\r")).toEqual({ type: "newline" });
 		expect(parseKey("\x7f")).toEqual({ type: "backspace" });
 		expect(parseKey("\x1b[3~")).toEqual({ type: "delete" });
+		expect(parseKey("\x1b[5~")).toEqual({ type: "pageUp" });
+		expect(parseKey("\x1b[6~")).toEqual({ type: "pageDown" });
 		expect(parseKey("\x1b[13;2u")).toEqual({ type: "newline" });
 		expect(parseKey("\x03")).toEqual({ type: "ctrl", value: "c" });
 		expect(parseKey("\x1b[A")).toEqual({ type: "up" });
@@ -120,7 +123,7 @@ describe("renderFrame", () => {
 		}
 	});
 
-	it("shows tool details beside the transcript on a wide terminal", () => {
+	it("shows selected tool details inline in the transcript", () => {
 		const frame = renderFrame(
 			{
 				status: "model=gpt",
@@ -160,7 +163,7 @@ describe("renderFrame", () => {
 			24,
 		).map(stripAnsi);
 		const text = frame.join("\n");
-		expect(text).toContain("TOOL DETAILS");
+		expect(text).toContain("SUMMARY");
 		expect(text).toContain("duration: 18 ms");
 		for (const line of frame) {
 			expect(line.length).toBeLessThanOrEqual(120);
@@ -183,7 +186,7 @@ describe("renderFrame", () => {
 		expect(frame).not.toContain("...");
 	});
 
-	it("keeps the live editor usable and hides the inspector at 80x24", () => {
+	it("keeps the live editor usable and bounds the inline inspector at 80x24", () => {
 		const completedTool = {
 			toolCallId: "call-1",
 			toolName: "read",
@@ -223,6 +226,35 @@ describe("renderFrame", () => {
 		for (const line of frame) {
 			expect(line.length).toBeLessThanOrEqual(80);
 		}
+	});
+
+	it("keeps a selected historical tool visible and reports unseen events", () => {
+		const firstTool = {
+			toolCallId: "call-1",
+			toolName: "read",
+			argsText: '{"path":"a.ts"}',
+			state: "success" as const,
+		};
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [
+					{ id: "first", kind: "tool", text: "", tool: firstTool },
+					{ id: "second", kind: "assistant", text: "new assistant output" },
+				],
+				editorLines: ["|"],
+				streaming: true,
+				colors: false,
+				focus: "transcript",
+				selectedToolCallId: "call-1",
+				followLatest: false,
+				unseenEventCount: 2,
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain(">TOOL read");
+		expect(frame).toContain("2 new events");
 	});
 });
 
@@ -338,6 +370,37 @@ describe("InteractiveTui", () => {
 		tui.pushKey({ type: "char", value: "keep going" });
 		tui.pushKey({ type: "enter" });
 		expect(submitted).toEqual(["keep going"]);
+		tui.close();
+	});
+
+	it("focuses a tool, expands an inline inspector, and returns to the editor", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 100,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		tui.appendToolStart("call-1", "edit", {
+			path: "parser.ts",
+			edits: [{ oldText: "throw old", newText: "throw next" }],
+		});
+		tui.appendToolEnd("call-1", "Edited parser.ts (1 replacement)", false);
+		tui.pushKey({ type: "tab" });
+		tui.pushKey({ type: "enter" });
+		expect(stripAnsi(writes.join(""))).toContain("SUMMARY");
+		tui.pushKey({ type: "right" });
+		tui.pushKey({ type: "right" });
+		expect(stripAnsi(writes.join(""))).toContain("- throw old");
+		tui.pushKey({ type: "escape" });
+		tui.pushKey({ type: "char", value: "next" });
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("next");
 		tui.close();
 	});
 

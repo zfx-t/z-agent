@@ -1,4 +1,5 @@
-import type { TuiHeaderState, TuiInspectorState, TuiToolSnapshot, TuiTranscriptEntry } from "./model.ts";
+import type { TuiFocus, TuiHeaderState, TuiInspectorState, TuiToolSnapshot, TuiTranscriptEntry } from "./model.ts";
+import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
 export interface TuiPickerState {
 	title: string;
@@ -15,6 +16,10 @@ export interface TuiFrameState {
 	confirm?: string;
 	picker?: TuiPickerState;
 	inspector?: TuiInspectorState;
+	focus?: TuiFocus;
+	selectedToolCallId?: string;
+	followLatest?: boolean;
+	unseenEventCount?: number;
 	streaming: boolean;
 	/** Set false for a deliberately monochrome terminal. */
 	colors?: boolean;
@@ -49,10 +54,12 @@ export function renderFrame(state: TuiFrameState, width: number, height: number)
 	let body: string[];
 	if (state.picker) {
 		body = fitLines(pickerLines(state.picker, safeWidth, paint).slice(-bodyHeight), bodyHeight);
-	} else if (state.inspector && safeWidth >= 110) {
-		body = splitBody(state.transcript, state.inspector, safeWidth, bodyHeight, paint);
 	} else {
-		body = fitLines(transcriptLines(state.transcript, safeWidth, paint).slice(-bodyHeight), bodyHeight);
+		body = transcriptViewport(
+			transcriptLines(state, safeWidth, safeHeight, paint),
+			bodyHeight,
+			state.followLatest !== false,
+		);
 	}
 	return [header, divider, ...body, ...footer];
 }
@@ -96,14 +103,20 @@ function footerLines(state: TuiFrameState, width: number, paint: (tone: Tone, te
 		lines.push(`| ${padTo(content, contentWidth)} |`);
 	}
 	lines.push(border);
-	lines.push(paint("muted", clip(inputHint(width, state.streaming), width)));
+	lines.push(paint("muted", clip(inputHint(width, state.streaming, state.focus), width)));
 	return lines;
 }
 
-function inputHint(width: number, streaming: boolean): string {
+function inputHint(width: number, streaming: boolean, focus: TuiFocus | undefined): string {
+	if (focus === "transcript") {
+		if (width >= 72) {
+			return " Up/Down select  Enter inspect  Left/Right view  Esc editor";
+		}
+		return " Up/Down select  Enter inspect  Esc editor";
+	}
 	const interrupt = streaming ? "Ctrl+C interrupt" : "Ctrl+C exit";
 	if (width >= 72) {
-		return ` Enter send  Shift+Enter newline  ${interrupt}`;
+		return ` Tab conversation  Enter send  Shift+Enter newline  ${interrupt}`;
 	}
 	if (width >= 54) {
 		return ` Enter send  Shift+Enter newline  ${interrupt}`;
@@ -135,33 +148,66 @@ function pickerLines(picker: TuiPickerState, width: number, paint: (tone: Tone, 
 	return lines;
 }
 
+interface TranscriptRender {
+	lines: string[];
+	selectedLine: number | undefined;
+}
+
 function transcriptLines(
-	entries: Array<TuiTranscriptEntry | string>,
+	state: TuiFrameState,
 	width: number,
+	height: number,
 	paint: (tone: Tone, text: string) => string,
-): string[] {
+): TranscriptRender {
 	const rendered: string[] = [];
-	for (const entry of entries) {
-		rendered.push(...renderTranscriptEntry(entry, width, paint));
+	let selectedLine: number | undefined;
+	for (const entry of state.transcript) {
+		const toolCallId = typeof entry === "string" ? undefined : entry.tool?.toolCallId;
+		const selected =
+			state.focus === "transcript" && toolCallId !== undefined && toolCallId === state.selectedToolCallId;
+		if (selected) {
+			selectedLine = rendered.length;
+		}
+		rendered.push(...renderTranscriptEntry(entry, width, paint, selected));
+		if (state.inspector !== undefined && toolCallId !== undefined && state.inspector.tool.toolCallId === toolCallId) {
+			rendered.push(...inlineInspectorLines(state.inspector, width, height, paint));
+		}
 	}
-	return rendered;
+	if (state.followLatest === false && (state.unseenEventCount ?? 0) > 0) {
+		rendered.push(paint("info", ` ↓ ${state.unseenEventCount} new events · End follow latest`));
+	}
+	return { lines: rendered, selectedLine };
+}
+
+function transcriptViewport(rendered: TranscriptRender, height: number, followLatest: boolean): string[] {
+	if (followLatest || rendered.selectedLine === undefined) {
+		return fitLines(rendered.lines.slice(-height), height);
+	}
+	const preferredStart = rendered.selectedLine - Math.floor(height / 3);
+	const start = Math.max(0, Math.min(Math.max(0, rendered.lines.length - height), preferredStart));
+	const visible = rendered.lines.slice(start, start + height);
+	while (visible.length < height) {
+		visible.push("");
+	}
+	return visible;
 }
 
 function renderTranscriptEntry(
 	entry: TuiTranscriptEntry | string,
 	width: number,
 	paint: (tone: Tone, text: string) => string,
+	selected: boolean,
 ): string[] {
 	const presentation = transcriptPresentation(typeof entry === "string" ? legacyEntry(entry) : entry);
 	const timestamp =
 		typeof entry === "string" || entry.createdAt === undefined ? "" : `${formatTime(entry.createdAt)} `;
-	const prefix = ` ${timestamp}${presentation.label} `;
+	const prefix = `${selected ? ">" : " "}${timestamp}${presentation.label} `;
 	const continuation = " ".repeat(visibleWidth(prefix));
 	const bodyWidth = Math.max(1, width - visibleWidth(prefix));
 	const wrapped = wrap(clean(presentation.text), bodyWidth);
 	return wrapped.map((part, index) => {
 		const marker = index === 0 ? prefix : continuation;
-		return `${paint(presentation.tone, marker)}${part}`;
+		return `${paint(selected ? "accent" : presentation.tone, marker)}${part}`;
 	});
 }
 
@@ -212,55 +258,35 @@ function toolStateLabel(tool: TuiToolSnapshot): string {
 	return tool.state === "success" ? "DONE" : "FAIL";
 }
 
-function splitBody(
-	transcript: Array<TuiTranscriptEntry | string>,
+function inlineInspectorLines(
 	inspector: TuiInspectorState,
 	width: number,
 	height: number,
 	paint: (tone: Tone, text: string) => string,
 ): string[] {
-	const available = width - 3;
-	const leftWidth = Math.max(40, Math.floor(available * 0.64));
-	const rightWidth = Math.max(38, available - leftWidth);
-	const transcriptLinesForPane = transcriptLines(transcript, leftWidth, paint);
-	const transcriptBody = fitLines(transcriptLinesForPane.slice(-height), height).map((line) => padTo(line, leftWidth));
-	const inspectorBody = inspectorLines(inspector, rightWidth, paint).slice(0, height);
-	while (inspectorBody.length < height) {
-		inspectorBody.push("");
-	}
-	return transcriptBody.map(
-		(line, index) => `${line} ${paint("dim", "|")} ${padTo(inspectorBody[index] ?? "", rightWidth)}`,
-	);
+	const view = inspector.view ?? "summary";
+	const views = availableInspectorViews(inspector.tool);
+	const tabs = views.map((item) => (item === view ? item.toUpperCase() : item)).join("  ");
+	const prefix = "    ";
+	const contentWidth = Math.max(1, width - visibleWidth(prefix));
+	const maxRows = detailRowLimit(width, height);
+	const detail = detailLines(inspector.tool, view)
+		.flatMap((line) => wrap(clean(line), contentWidth))
+		.slice(inspector.scrollOffset ?? 0, (inspector.scrollOffset ?? 0) + maxRows);
+	const statusTone: Tone =
+		inspector.tool.state === "running" ? "accent" : inspector.tool.state === "success" ? "success" : "error";
+	return [
+		paint("accent", `${prefix}${tabs}`),
+		paint(statusTone, `${prefix}${toolStateLabel(inspector.tool)} · ${inspector.tool.toolName}`),
+		...detail.map((line) => `${paint("muted", prefix)}${line}`),
+	];
 }
 
-function inspectorLines(
-	inspector: TuiInspectorState,
-	width: number,
-	paint: (tone: Tone, text: string) => string,
-): string[] {
-	const tool = inspector.tool;
-	const statusTone: Tone = tool.state === "running" ? "accent" : tool.state === "success" ? "success" : "error";
-	const lines = [
-		paint("strong", " TOOL DETAILS"),
-		paint("dim", " ------------------------------"),
-		paint("info", ` tool: ${tool.toolName}`),
-		paint("muted", ` status: ${toolStateLabel(tool)}`),
-		paint("muted", ` call: ${tool.toolCallId}`),
-		paint(statusTone, ` state: ${tool.state}`),
-		paint("muted", ` args: ${tool.argsText}`),
-	];
-	if (tool.durationMs !== undefined) {
-		lines.push(paint("muted", ` duration: ${tool.durationMs} ms`));
+function detailRowLimit(width: number, height: number): number {
+	if (width <= 80 && height <= 24) {
+		return 6;
 	}
-	if (tool.outputText) {
-		lines.push(paint("strong", " output:"));
-		lines.push(...tool.outputText.split("\n").map((line) => paint("muted", ` | ${line}`)));
-	}
-	if (tool.detailsText) {
-		lines.push(paint("strong", " details:"));
-		lines.push(...tool.detailsText.split("\n").map((line) => paint("muted", ` | ${line}`)));
-	}
-	return lines.map((line) => clip(line, width));
+	return width >= 110 ? 12 : 8;
 }
 
 function fitLines(lines: string[], height: number): string[] {

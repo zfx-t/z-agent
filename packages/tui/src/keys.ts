@@ -1,12 +1,15 @@
 export type Key =
 	| { type: "char"; value: string }
 	| { type: "paste"; value: string }
+	| { type: "tab" }
 	| { type: "enter" }
 	| { type: "backspace" }
 	| { type: "delete" }
 	| { type: "escape" }
 	| { type: "home" }
 	| { type: "end" }
+	| { type: "pageUp" }
+	| { type: "pageDown" }
 	| { type: "newline" }
 	| { type: "ctrl"; value: string }
 	| { type: "up" }
@@ -20,6 +23,8 @@ const ESCAPE_SEQUENCES = [
 	"\x1b[13;2u",
 	"\x1b[27;2;13~",
 	"\x1b[3~",
+	"\x1b[5~",
+	"\x1b[6~",
 	"\x1b[A",
 	"\x1b[B",
 	"\x1b[C",
@@ -41,6 +46,9 @@ export function parseKey(input: string): Key | undefined {
 	}
 	if (input === "\r" || input === "\n") {
 		return { type: "enter" };
+	}
+	if (input === "\t") {
+		return { type: "tab" };
 	}
 	if (input === "\x1b\r" || input === "\x1b\n" || input === "\x1b[13;2u" || input === "\x1b[27;2;13~") {
 		return { type: "newline" };
@@ -65,6 +73,12 @@ export function parseKey(input: string): Key | undefined {
 	}
 	if (input === "\x1b[3~") {
 		return { type: "delete" };
+	}
+	if (input === "\x1b[5~") {
+		return { type: "pageUp" };
+	}
+	if (input === "\x1b[6~") {
+		return { type: "pageDown" };
 	}
 	if (input === "\x1b[H" || input === "\x1bOH") {
 		return { type: "home" };
