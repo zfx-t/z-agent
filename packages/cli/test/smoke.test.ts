@@ -1,10 +1,14 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const bin = join(pkgRoot, "bin/z-agent.mjs");
+
+const smokePillow = join(tmpdir(), "z-agent-smoke-pillow");
 
 function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 	return {
@@ -14,6 +18,7 @@ function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 		TEMP: process.env.TEMP,
 		TMP: process.env.TMP,
 		TMPDIR: process.env.TMPDIR,
+		PILLOW_HOME: smokePillow,
 		...extra,
 	};
 }
@@ -43,5 +48,20 @@ describe("@z-agent/cli smoke", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("Usage:");
 		expect(result.stdout).toContain("TUI");
+	});
+
+	it("lists configured models without requiring an API key", () => {
+		const result = runCli(["--list-models"], { OPENAI_API_KEY: "" });
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("fast");
+		expect(result.stdout).toContain("gpt-4.1-mini");
+	});
+
+	it("print warns when config is broken and no model is set", () => {
+		const dir = mkdtempSync(join(tmpdir(), "z-smoke-bad-cfg-"));
+		writeFileSync(join(dir, "config.json"), "{", "utf-8");
+		const result = runCli(["-p", "hi"], { OPENAI_API_KEY: "sk-test", PILLOW_HOME: dir });
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("no model in use");
 	});
 });

@@ -2,16 +2,27 @@ import type { AgentEvent, AgentToolResult } from "@z-agent/agent";
 
 const TOOL_RESULT_DISPLAY_CHARS = 800;
 const ARGS_DISPLAY_CHARS = 240;
+const ESC = "\u001b";
+const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
 
 export interface StreamRendererOptions {
 	verbose?: boolean;
-	stdout?: { write: (chunk: string) => void };
+	stdout?: { isTTY?: boolean; write: (chunk: string) => void };
 }
 
 function textFromToolResult(result: AgentToolResult): string {
 	return result.content
 		.filter((block): block is { type: "text"; text: string } => block.type === "text")
-		.map((block) => block.text)
+		.map((block) => cleanForTerminal(block.text))
+		.join("");
+}
+
+function cleanForTerminal(text: string): string {
+	return Array.from(text.replace(ANSI_PATTERN, ""))
+		.filter((char) => {
+			const code = char.codePointAt(0) ?? 0;
+			return code === 0x0a || code === 0x09 || (code >= 0x20 && code !== 0x7f);
+		})
 		.join("");
 }
 
@@ -41,12 +52,14 @@ function clip(text: string, maxChars: number): string {
  */
 export class StreamRenderer {
 	private readonly verbose: boolean;
-	private readonly stdout: { write: (chunk: string) => void };
+	private readonly stdout: { isTTY?: boolean; write: (chunk: string) => void };
+	private readonly colors: boolean;
 	private atLineStart = true;
 
 	constructor(options: StreamRendererOptions = {}) {
 		this.verbose = options.verbose === true;
 		this.stdout = options.stdout ?? process.stdout;
+		this.colors = this.stdout.isTTY === true && process.env.NO_COLOR === undefined;
 	}
 
 	handle(event: AgentEvent): void {
@@ -83,19 +96,22 @@ export class StreamRenderer {
 				break;
 			case "tool_execution_start":
 				this.ensureNewline();
-				this.line(`[tool] ${event.toolName} ${compactJson(event.args, ARGS_DISPLAY_CHARS)}`);
+				this.line(this.tone("info", `[tool] ${event.toolName} ${compactJson(event.args, ARGS_DISPLAY_CHARS)}`));
 				break;
 			case "tool_execution_end": {
 				this.ensureNewline();
 				if (event.isError) {
 					const errText = clip(textFromToolResult(event.result), TOOL_RESULT_DISPLAY_CHARS);
-					this.line(`[tool_end] ${event.toolName} error=${errText}`);
+					if (errText.length > 0) {
+						this.toolOutput(errText);
+					}
+					this.line(this.tone("error", `[tool_end] ${event.toolName} error=true`));
 				} else {
 					const body = clip(textFromToolResult(event.result).trimEnd(), TOOL_RESULT_DISPLAY_CHARS);
 					if (body.length > 0) {
-						this.line(body);
+						this.toolOutput(body);
 					}
-					this.line(`[tool_end] ${event.toolName} error=false`);
+					this.line(this.tone("success", `[tool_end] ${event.toolName} error=false`));
 				}
 				break;
 			}
@@ -105,17 +121,43 @@ export class StreamRenderer {
 	}
 
 	private write(text: string): void {
-		if (text.length === 0) {
+		const output = cleanForTerminal(text);
+		if (output.length === 0) {
 			return;
 		}
-		this.stdout.write(text);
-		this.atLineStart = text.endsWith("\n");
+		this.stdout.write(output);
+		this.atLineStart = output.endsWith("\n");
 	}
 
 	private line(text: string): void {
 		this.ensureNewline();
 		this.stdout.write(`${text}\n`);
 		this.atLineStart = true;
+	}
+
+	private toolOutput(text: string): void {
+		if (!this.colors) {
+			this.line(text);
+			return;
+		}
+		for (const line of text.split("\n")) {
+			this.line(this.tone("muted", `| ${line}`));
+		}
+	}
+
+	private tone(tone: "error" | "info" | "muted" | "success", text: string): string {
+		if (!this.colors) {
+			return text;
+		}
+		const code =
+			tone === "error"
+				? "\x1b[38;5;203m"
+				: tone === "success"
+					? "\x1b[38;5;78m"
+					: tone === "info"
+						? "\x1b[38;5;45m"
+						: "\x1b[2m";
+		return `${code}${text}\x1b[0m`;
 	}
 
 	private ensureNewline(): void {
