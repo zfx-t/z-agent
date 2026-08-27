@@ -1,5 +1,5 @@
-const ENTER_ALT = "\x1b[?1049h\x1b[?25l";
-const LEAVE_ALT = "\x1b[?25h\x1b[?1049l";
+const ENTER_ALT = "\x1b[?1049h\x1b[?2004h\x1b[?25l";
+const LEAVE_ALT = "\x1b[?25h\x1b[?2004l\x1b[?1049l";
 
 export class LineScreen {
 	private previous: string[] = [];
