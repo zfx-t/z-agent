@@ -6,6 +6,8 @@ export interface CliArgs {
 	yes: boolean;
 	noJail: boolean;
 	print: boolean;
+	listModels: boolean;
+	listSessions: boolean;
 	durable: boolean;
 	cwd?: string;
 	model?: string;
@@ -24,6 +26,8 @@ export function parseArgs(argv: string[]): CliArgs {
 	let yes = false;
 	let noJail = false;
 	let print = false;
+	let listModels = false;
+	let listSessions = false;
 	let durable = false;
 	let cwd: string | undefined;
 	let model: string | undefined;
@@ -59,6 +63,14 @@ export function parseArgs(argv: string[]): CliArgs {
 		}
 		if (arg === "--durable") {
 			durable = true;
+			continue;
+		}
+		if (arg === "--list-models") {
+			listModels = true;
+			continue;
+		}
+		if (arg === "--list-sessions") {
+			listSessions = true;
 			continue;
 		}
 		if (arg === "--resume") {
@@ -108,6 +120,8 @@ export function parseArgs(argv: string[]): CliArgs {
 		yes,
 		noJail,
 		print,
+		listModels,
+		listSessions,
 		durable,
 		cwd,
 		model,
@@ -143,12 +157,21 @@ Flags:
   --session-dir <d>  Session storage directory
   --extension <p>    Load an extension module
   --durable          Use L5 harness (JSONL op.state)
+  --list-models      List configured model aliases
+  --list-sessions    List sessions for --cwd
   -h, --help         Help
 
+Interactive commands:
+  Ctrl+P or /commands  Search available TUI commands
+
 Env:
-  OPENAI_API_KEY    Required
+  OPENAI_API_KEY    API key (or config.json apiKey)
   OPENAI_BASE_URL   Optional
-  OPENAI_MODEL      Default model id
+  OPENAI_MODEL      Alias or raw model id
+  PILLOW_HOME       Override ~/.pillow
+
+Config:
+  ~/.pillow/config.json   Model catalog (aliases, thinking, context)
 `);
 }
 
@@ -159,6 +182,12 @@ export function looksLikeReasoningModel(modelId: string): boolean {
 	);
 }
 
-export function resolveModelId(args: CliArgs, env: NodeJS.ProcessEnv = process.env): string {
-	return args.model ?? env.OPENAI_MODEL ?? DEFAULT_MODEL_ID;
+/** Flag then env. No built-in model id — catalog / raw id live in config.ts. */
+export function resolveModelId(args: CliArgs, env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const flag = args.model?.trim();
+	if (flag) {
+		return flag;
+	}
+	const fromEnv = env.OPENAI_MODEL?.trim();
+	return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
 }

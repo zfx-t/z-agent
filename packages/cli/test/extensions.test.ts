@@ -41,9 +41,9 @@ describe("extensions", () => {
 		expect(result).toEqual({ block: true, reason: "ext" });
 	});
 
-	it("discovers extension modules under cwd .z-agent/extensions", async () => {
+	it("discovers extension modules under cwd .pillow/extensions", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "z-ext-disc-"));
-		const dir = join(cwd, ".z-agent", "extensions");
+		const dir = join(cwd, ".pillow", "extensions");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "hook.mjs"), "export function createExtension() { return {}; }\n", "utf-8");
 		const paths = await discoverExtensionPaths(cwd);

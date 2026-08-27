@@ -103,10 +103,16 @@ Ship an in-memory agent kernel (Phase 1) plus one production LLM stream path (Ph
 - **Files/components affected:** packages/agent/src/tools/**, packages/tui/**, packages/cli/src/**, packages/ai/src/openai-responses.ts, packages/harness/**, docs/**
 - **Dependencies:** PR 9
 
+### PR 17: Pillow home + user config (ADR-0022)
+
+- **Description:** Rename on-disk home to `.pillow`. User-only `config.json` model catalog (aliases, thinking, context). One-shot copy from `.z-agent`. Drop `{cwd}/.agents`. Broken catalog: enter and warn, no silent default model.
+- **Files/components affected:** packages/cli/src/**, docs/adr/0022-pillow-home.md
+- **Dependencies:** PR 10–16
+
 ## Success criteria
 
 - `npm run check` and `npm test` green on the assembled stack tip
 - Agent unit tests cover: text turn, sequential tools, parallel tools, steer, followUp, abort, length-batch tool failure, terminate batch, prepareNextTurn, shouldStopAfterTurn, tools on StreamFn Context
-- CLI/TUI/harness tests cover: tools+jail, TUI confirm keys, sessions, compaction, skills, sandwich resume, thinking SSE replay
+- CLI/TUI/harness tests cover: tools+jail, TUI confirm keys, sessions, compaction, skills, sandwich resume, thinking SSE replay, pillow config resolve
 - No `@earendil-works/*` in package.json or imports
 - Effect boundaries documented in code comments near streamAssistant and tool.execute

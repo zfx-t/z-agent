@@ -4,8 +4,8 @@
 
 import type { Stats } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { pillowProjectDir, pillowUserDir } from "./pillow-home.ts";
 
 export interface Skill {
 	name: string;
@@ -55,7 +55,7 @@ async function skillsFromDir(dir: string): Promise<Skill[]> {
 }
 
 export function skillSearchDirs(cwd: string): string[] {
-	return [join(homedir(), ".z-agent", "skills"), join(cwd, ".z-agent", "skills"), join(cwd, ".agents", "skills")];
+	return [join(pillowUserDir(), "skills"), join(pillowProjectDir(cwd), "skills")];
 }
 
 export async function loadSkills(cwd: string): Promise<Skill[]> {

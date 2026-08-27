@@ -102,9 +102,17 @@ EventStream wrappers around `runAgentLoop` / `runAgentLoopContinue`. Completing 
 
 JSON string of a Responses reasoning item, replayed on later turns. (ADR-0017)
 
+## Pillow home
+
+On-disk product directory name `.pillow` (user + project). Replaces `.z-agent` as the long-lived home. User config is `~/.pillow/config.json` only. Optional `PILLOW_HOME` overrides the user directory. (ADR-0022)
+
+## Model alias
+
+Key in `~/.pillow/config.json` `models`. `--model` / `OPENAI_MODEL` resolve alias first, then raw `id`. (ADR-0022)
+
 ## Session tree
 
-Append-only JSONL nodes with `id`/`parentId` under `~/.z-agent/sessions`. Product persistence, not L5. (ADR-0016)
+Append-only JSONL nodes with `id`/`parentId` under `~/.pillow/sessions`. Product persistence, not L5. (ADR-0016, ADR-0022)
 
 ## Compaction
 
@@ -112,7 +120,7 @@ When estimated tokens exceed `contextWindow - reserve`, or the last assistant `s
 
 ## Skills / extensions / project trust
 
-`SKILL.md` files and extension modules are loaded from `~/.z-agent`, `{cwd}/.z-agent`, and `{cwd}/.agents` after the cwd is trusted (`~/.z-agent/trust.json`). Confirm UI still runs before extension `beforeToolCall`. (ADR-0016)
+`SKILL.md` files and extension modules are loaded from `~/.pillow` and `{cwd}/.pillow` after the cwd is trusted. Confirm UI still runs before extension `beforeToolCall`. `{cwd}/.agents` is not scanned. (ADR-0016, ADR-0022)
 
 ## Path jail
 

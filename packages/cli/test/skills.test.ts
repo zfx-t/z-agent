@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import { formatSkillsPrompt, loadSkills } from "../src/skills.ts";
 
 describe("skills", () => {
-	it("loads SKILL.md from cwd .z-agent/skills", async () => {
+	it("loads SKILL.md from cwd .pillow/skills", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "z-skills-"));
-		const dir = join(cwd, ".z-agent", "skills", "demo");
+		const dir = join(cwd, ".pillow", "skills", "demo");
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "SKILL.md"), "# Demo skill\nAlways say banana.\n", "utf-8");
 		const skills = await loadSkills(cwd);

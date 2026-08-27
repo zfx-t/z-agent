@@ -3,7 +3,6 @@
  */
 
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -12,6 +11,7 @@ import type {
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 } from "@z-agent/agent";
+import { pillowProjectDir, pillowUserDir } from "./pillow-home.ts";
 
 export interface Extension {
 	beforeToolCall?: (
@@ -25,11 +25,7 @@ export interface Extension {
 }
 
 export function extensionSearchDirs(cwd: string): string[] {
-	return [
-		join(homedir(), ".z-agent", "extensions"),
-		join(cwd, ".z-agent", "extensions"),
-		join(cwd, ".agents", "extensions"),
-	];
+	return [join(pillowUserDir(), "extensions"), join(pillowProjectDir(cwd), "extensions")];
 }
 
 const EXT_RE = /\.(mjs|js|ts)$/;

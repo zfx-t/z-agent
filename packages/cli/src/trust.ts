@@ -1,13 +1,13 @@
 /**
- * Project trust for loading cwd `.z-agent/` resources.
+ * Project trust for loading cwd `.pillow/` resources.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { pillowUserDir } from "./pillow-home.ts";
 
-export function trustStorePath(root = join(homedir(), ".z-agent")): string {
+export function trustStorePath(root = pillowUserDir()): string {
 	return join(root, "trust.json");
 }
 

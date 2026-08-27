@@ -27,3 +27,7 @@ Responses stream; thinking SSE + signature replay (ADR-0017).
 ## Phase 3 — L5 durable harness (done, JSONL)
 
 SQLite backend TBD (separate ADR).
+
+## Phase 2.6 — Pillow home + user config (done)
+
+`~/.pillow/config.json` model catalog (aliases, thinking, context). On-disk home renamed from `.z-agent`. (ADR-0022)

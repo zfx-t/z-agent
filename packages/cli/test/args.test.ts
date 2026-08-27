@@ -24,6 +24,12 @@ describe("parseArgs", () => {
 		expect(args.promptParts).toEqual(["fix", "it"]);
 	});
 
+	it("recognizes catalog and session listing commands", () => {
+		const args = parseArgs(["--list-models", "--list-sessions"]);
+		expect(args.listModels).toBe(true);
+		expect(args.listSessions).toBe(true);
+	});
+
 	it("rejects unknown flags", () => {
 		expect(parseArgs(["--bogus"]).error).toBe("Unknown flag: --bogus");
 	});
@@ -37,7 +43,8 @@ describe("looksLikeReasoningModel / resolveModelId / help", () => {
 
 	it("resolves model id", () => {
 		expect(resolveModelId({ ...parseArgs([]), model: "from-flag" }, { OPENAI_MODEL: "from-env" })).toBe("from-flag");
-		expect(resolveModelId(parseArgs([]), {})).toBe("gpt-4.1-mini");
+		expect(resolveModelId(parseArgs([]), { OPENAI_MODEL: "from-env" })).toBe("from-env");
+		expect(resolveModelId(parseArgs([]), {})).toBeUndefined();
 	});
 
 	it("help mentions TUI and jail", () => {
@@ -48,7 +55,9 @@ describe("looksLikeReasoningModel / resolveModelId / help", () => {
 		const help = lines.join("");
 		expect(help).toContain("Usage:");
 		expect(help).toContain("OPENAI_API_KEY");
+		expect(help).toContain("config.json");
 		expect(help).toContain("TUI");
 		expect(help).toContain("--no-jail");
+		expect(help).toContain("--list-models");
 	});
 });

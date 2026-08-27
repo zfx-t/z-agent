@@ -19,4 +19,6 @@ npm run z-agent
 npx z-agent -p --yes "summarize README.md"
 ```
 
+Config: `~/.pillow/config.json` (ADR-0022).
+
 See [`packages/cli/README.md`](packages/cli/README.md) and [`docs/adr/`](docs/adr/).

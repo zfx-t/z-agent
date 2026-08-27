@@ -21,6 +21,7 @@
 | [0016-cli](0016-coding-cli.md) | Coding CLI slice | Superseded |
 | [0017](0017-thinking-sse-replay.md) | Responses thinking SSE + replay | Accepted |
 | [0021](0021-l5-jsonl-harness.md) | L5 JSONL harness | Accepted |
+| [0022](0022-pillow-home.md) | Pillow home and user config | Accepted |
 
 ## Format
 

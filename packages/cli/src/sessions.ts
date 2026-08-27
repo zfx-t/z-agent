@@ -3,9 +3,9 @@
  */
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@z-agent/agent";
+import { pillowUserDir } from "./pillow-home.ts";
 
 export type SessionEntryType = "message" | "compaction" | "label";
 
@@ -36,7 +36,7 @@ function encodeCwd(cwd: string): string {
 }
 
 export function defaultSessionsRoot(): string {
-	return join(homedir(), ".z-agent", "sessions");
+	return join(pillowUserDir(), "sessions");
 }
 
 export function sessionDirForCwd(cwd: string, root = defaultSessionsRoot()): string {
