@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "outcome": {
+    "user": "coding-agent operator",
+    "observable_success": "A keyboard-selected tool expands below its transcript row with a bounded detail view, then returns the operator to the composer.",
+    "surface": "cli",
+    "entrypoint": "npm run z-agent",
+    "primary_journey": [
+      "Launch Z Agent in an interactive TTY",
+      "Prompt the configured model to perform a read-only tool invocation",
+      "Press Tab, Enter, Right, and Esc",
+      "Observe inline Summary and Output, then editable composer focus"
+    ]
+  },
+  "verified_at": "2026-08-27T13:00:24+08:00",
+  "environment": "Linux pseudo-TTY; Node 22.20.0; configured local model; isolated /tmp working directory",
+  "automated_checks": [
+    {
+      "name": "full workspace check",
+      "scope": "supporting",
+      "command": "PATH=/home/zeroth/.vmr/versions/node_versions/node-22.20.0/bin:$PATH npm run check",
+      "cwd": "../..",
+      "timeout_seconds": 180,
+      "output_contains": "Checked"
+    },
+    {
+      "name": "focused TUI regression suite",
+      "scope": "supporting",
+      "command": "PATH=/home/zeroth/.vmr/versions/node_versions/node-22.20.0/bin:$PATH npm --workspace @z-agent/tui test",
+      "cwd": "../..",
+      "timeout_seconds": 60,
+      "output_contains": "18 passed"
+    }
+  ],
+  "manual_checks": [
+    {
+      "name": "real TTY inline inspector journey",
+      "scope": "primary_journey",
+      "result": "passed",
+      "observed_at": "2026-08-27T13:00:24+08:00",
+      "limitation": "Tool navigation requires a configured provider and a real terminal, so the pseudo-TTY sequence is recorded manually alongside deterministic TUI tests.",
+      "artifacts": [
+        "tui-inline-inspector-manual-20260827.md"
+      ]
+    }
+  ],
+  "blockers": [],
+  "residual_risks": [
+    "The manual TTY proof used a read-only tool; confirmation priority remains automated-test coverage.",
+    "The pseudo-TTY did not simulate a physical terminal resize while streaming."
+  ],
+  "latest_user_report": "none"
+}

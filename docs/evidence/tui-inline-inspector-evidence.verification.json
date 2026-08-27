@@ -1,0 +1,26 @@
+{
+  "status": "verified",
+  "manifest": "/home/zeroth/ForMe/z-agent/docs/evidence/tui-inline-inspector-evidence.json",
+  "executed_at": "2026-08-27T05:06:02.945311+00:00",
+  "automated_results": [
+    {
+      "name": "full workspace check",
+      "scope": "supporting",
+      "command": "PATH=/home/zeroth/.vmr/versions/node_versions/node-22.20.0/bin:$PATH npm run check",
+      "cwd": "/home/zeroth/ForMe/z-agent",
+      "exit_code": 0,
+      "output": "\n> check\n> biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/tui/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit && tsc -p packages/harness/tsconfig.json --noEmit\n\nChecked 84 files in 183ms. No fixes applied.\n"
+    },
+    {
+      "name": "focused TUI regression suite",
+      "scope": "supporting",
+      "command": "PATH=/home/zeroth/.vmr/versions/node_versions/node-22.20.0/bin:$PATH npm --workspace @z-agent/tui test",
+      "cwd": "/home/zeroth/ForMe/z-agent",
+      "exit_code": 0,
+      "output": "\n> @z-agent/tui@0.0.0 test\n> vitest --run\n\n\n RUN  v3.2.4 /home/zeroth/ForMe/z-agent/packages/tui\n\n \u2713 test/tui.test.ts (18 tests) 21ms\n\n Test Files  1 passed (1)\n      Tests  18 passed (18)\n   Start at  13:06:02\n   Duration  465ms (transform 144ms, setup 0ms, collect 151ms, tests 21ms, environment 0ms, prepare 113ms)\n\n"
+    }
+  ],
+  "manual_results": [
+    "manual PASS: real TTY inline inspector journey (1 artifact(s))"
+  ]
+}

@@ -31,7 +31,7 @@ The shipped TUI already provides:
 - multiline editor, prompt history, and bracketed-paste placeholders;
 - live input while an agent run is active;
 - streaming assistant text and foldable thinking;
-- wide-terminal tool inspector, confirmation prompt, and session picker;
+- keyboard-selected inline tool details, confirmation prompt, and session picker;
 - terminal-width-aware wrapping and monochrome fallback.
 
 The remaining work is session-tree navigation and extension/theme depth, not a
@@ -75,8 +75,8 @@ Visible categories:
 - warning, cancellation, and recoverable error.
 
 The primary transcript stays concise. Tool arguments, complete output, patches,
-and failure diagnostics open in an inspector rather than forcing every detail
-into the scrollback.
+and failure diagnostics expand below the selected tool entry rather than
+forcing every detail into the scrollback.
 
 ### Preserve history as a tree
 
@@ -103,7 +103,7 @@ command or patch summary, and the available decision.
 
 ### Let the product grow through stable hooks
 
-Commands, status segments, transcript renderers, inspector panes, and optional
+Commands, status segments, transcript renderers, inline detail views, and optional
 key bindings should have explicit extension points. Extensions may contribute
 presentation and CLI behavior, but must not create new effect paths in
 `@z-agent/agent`.
@@ -120,18 +120,17 @@ presentation and CLI behavior, but must not create new effect paths in
 |  TOOL    grep  running                                      [details]     |
 |  DONE    grep  12 matches, 18 ms                            [details]     |
 |  AI      The parser already rejects ...                                   |
-|                                                                            |
-|                                                    Inspector (when opened)|
-|                                                    args / output / diff    |
+|  TOOL    edit parser.ts                                     [Enter details]|
+|          SUMMARY / output / diff below the selected tool entry             |
 +----------------------------------------------------------------------------+
 | > Editor remains active during a run                                      |
 |   [Pasted text - ...] [Image - ...]  Enter send  Ctrl+C interrupt          |
 +----------------------------------------------------------------------------+
 ```
 
-The full-width transcript remains the default for narrow terminals. The latest
-tool inspector appears beside it on wide terminals and is omitted below the
-wide breakpoint. It never reduces the editor below a usable multiline height.
+The full-width transcript is the only workspace layout. Tool detail expands
+inline below a keyboard-selected entry and is bounded by the current terminal
+height; it never reduces the editor below a usable multiline height.
 
 ## Visual and Interaction Specification
 
@@ -163,15 +162,16 @@ map semantic tokens rather than hard-code color values in transcript renderers.
   Truncate lower-priority fields before the run state.
 - Transcript: the primary scrolling region. Entries wrap by terminal cell width
   and preserve their category label on the first line.
-- Inspector: at 110 columns or wider it receives about 36% of the width and a
-  minimum of 38 columns. Below that width the transcript uses the full width.
+- Inline detail: opens below one selected tool at a time. It receives a bounded
+  internal viewport rather than terminal width; 110+ columns can show about 12
+  rows, 80–109 about 8 rows, and 80x24 about 6 rows.
 - Editor: fixed at the bottom, with no line-number gutter, at least two input
   rows, display-only paste placeholders, and one hint row.
   Its height does not shrink while streaming.
 - Confirmation: an explicit warning row above the editor. It leaves the last
   relevant tool event and current draft visible.
-- Minimum supported size: 80x24. Below this, drop secondary header fields,
-  hide the inspector, and reduce hints before reducing the editor.
+- Minimum supported size: 80x24. Below this, drop secondary header fields and
+  detail previews, and reduce hints before reducing the editor.
 
 ### Interaction rules
 
@@ -183,8 +183,10 @@ map semantic tokens rather than hard-code color values in transcript renderers.
 - Animation is limited to a low-frequency textual spinner or elapsed-time
   update. Respect an environment-level reduced-motion preference where
   available.
-- Thinking, raw tool output, and diffs are progressive disclosure. The user can
-  inspect them without losing the live transcript position.
+- Thinking, raw tool output, and diffs are progressive disclosure. `Tab`,
+  `Up`/`Down`, and `Enter` select and expand a tool; `Left`/`Right` change its
+  available views and `Esc` restores editor focus. The user can inspect detail
+  without losing the live transcript position.
 
 ## Delivery Sequence
 
@@ -211,14 +213,14 @@ Acceptance:
 - the editor remains visible while the run is active;
 - abort leaves the editor and transcript intact.
 
-### R3: Inspector and permission context (baseline implemented)
+### R3: Inline inspector and permission context (baseline implemented)
 
-Add a detail inspector for tool input/output, diffs, errors, and confirmation
+Add inline detail for tool input/output, diffs, errors, and confirmation
 context. Keep the transcript compact and preserve copyable raw output.
 
 Acceptance:
 
-- the active transcript position remains stable while an inspector opens;
+- the active transcript position remains stable while inline detail opens;
 - confirmation decisions remain accessible without a mouse;
 - narrow terminals preserve a full-width transcript and live editor.
 
@@ -279,7 +281,7 @@ code, execute tools, or write durable session state.
 
 ## Validation Strategy
 
-- Unit-test transcript-state transitions, editor modes, inspector focus, and
+- Unit-test transcript-state transitions, editor modes, inline detail focus, and
   terminal-width layout in `@z-agent/tui`.
 - Unit-test CLI event adaptation and live-input dispatch in `@z-agent/cli`.
 - Keep agent queue and lifecycle tests in `@z-agent/agent`.
