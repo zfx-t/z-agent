@@ -7,11 +7,14 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@z-agent/ai";
 import { z } from "zod";
 import { looksLikeReasoningModel } from "./args.ts";
+import type { AliasSettingsPatch } from "./model-settings.ts";
 import { pillowUserDir } from "./pillow-home.ts";
 
 export const CONFIG_VERSION = 1;
 export const STARTER_ALIAS = "fast";
 export const STARTER_MODEL_ID = "gpt-4.1-mini";
+export const STARTER_CONTEXT_WINDOW = 128_000;
+export const STARTER_MAX_TOKENS = 4_096;
 export const NO_MODEL_WARNING = "warning: no model in use";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -57,6 +60,11 @@ export interface UnresolvedModel {
 
 export type ModelResolution = ResolvedModel | UnresolvedModel;
 
+export interface ModelNumericOverrides {
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
 export function configPath(userPillow = pillowUserDir()): string {
 	return join(userPillow, "config.json");
 }
@@ -66,7 +74,11 @@ export function starterCatalog(): PillowCatalog {
 		version: CONFIG_VERSION,
 		defaultModel: STARTER_ALIAS,
 		models: {
-			[STARTER_ALIAS]: { id: STARTER_MODEL_ID },
+			[STARTER_ALIAS]: {
+				id: STARTER_MODEL_ID,
+				contextWindow: STARTER_CONTEXT_WINDOW,
+				maxTokens: STARTER_MAX_TOKENS,
+			},
 		},
 	};
 }
@@ -116,10 +128,31 @@ export function resolveThinking(id: string, thinking?: ThinkingLevel): ThinkingL
 	return looksLikeReasoningModel(id) ? "medium" : "off";
 }
 
+function positiveIntEnv(env: NodeJS.ProcessEnv, key: string): number | undefined {
+	const raw = env[key]?.trim();
+	if (!raw) {
+		return undefined;
+	}
+	if (!/^\d+$/u.test(raw)) {
+		return undefined;
+	}
+	const value = Number(raw);
+	return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function resolveNumericField(
+	override: number | undefined,
+	envValue: number | undefined,
+	fileValue: number | undefined,
+): number | undefined {
+	return override ?? envValue ?? fileValue;
+}
+
 export function resolveModel(
 	ref: string | undefined,
 	catalog: PillowCatalog | undefined,
 	env: NodeJS.ProcessEnv = process.env,
+	overrides: ModelNumericOverrides = {},
 ): ModelResolution {
 	const usedDefault = ref === undefined;
 	const name = ref ?? catalog?.defaultModel;
@@ -136,8 +169,12 @@ export function resolveModel(
 			baseUrl: env.OPENAI_BASE_URL || entry.baseUrl,
 			apiKey: env.OPENAI_API_KEY || entry.apiKey,
 			thinking: resolveThinking(entry.id, entry.thinking),
-			contextWindow: entry.contextWindow,
-			maxTokens: entry.maxTokens,
+			contextWindow: resolveNumericField(
+				overrides.contextWindow,
+				positiveIntEnv(env, "OPENAI_CONTEXT_WINDOW"),
+				entry.contextWindow,
+			),
+			maxTokens: resolveNumericField(overrides.maxTokens, positiveIntEnv(env, "OPENAI_MAX_TOKENS"), entry.maxTokens),
 		};
 	}
 
@@ -151,7 +188,49 @@ export function resolveModel(
 		baseUrl: env.OPENAI_BASE_URL || undefined,
 		apiKey: env.OPENAI_API_KEY || undefined,
 		thinking: resolveThinking(name),
+		contextWindow: resolveNumericField(
+			overrides.contextWindow,
+			positiveIntEnv(env, "OPENAI_CONTEXT_WINDOW"),
+			undefined,
+		),
+		maxTokens: resolveNumericField(overrides.maxTokens, positiveIntEnv(env, "OPENAI_MAX_TOKENS"), undefined),
 	};
+}
+
+export function updateAliasSettings(catalog: PillowCatalog, alias: string, patch: AliasSettingsPatch): PillowCatalog {
+	const current = catalog.models[alias];
+	if (!current) {
+		throw new Error(`alias ${alias} is not in config.json`);
+	}
+	return {
+		...catalog,
+		models: {
+			...catalog.models,
+			[alias]: {
+				...current,
+				...patch,
+			},
+		},
+	};
+}
+
+export async function saveCatalog(userPillow: string, catalog: PillowCatalog): Promise<void> {
+	const path = configPath(userPillow);
+	const body = `${JSON.stringify(catalog, null, 2)}\n`;
+	await writeFile(path, body, { encoding: "utf-8", mode: 0o600 });
+	await chmod(path, 0o600);
+}
+
+export async function persistAliasSettings(
+	userPillow: string,
+	alias: string,
+	patch: AliasSettingsPatch,
+): Promise<void> {
+	const loaded = await loadCatalog(userPillow);
+	if (!loaded.catalog) {
+		throw new Error(loaded.warning ?? "could not read config.json");
+	}
+	await saveCatalog(userPillow, updateAliasSettings(loaded.catalog, alias, patch));
 }
 
 export function modelRefFromArgs(

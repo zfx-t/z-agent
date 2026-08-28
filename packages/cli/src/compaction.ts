@@ -27,7 +27,10 @@ export function estimateTokens(messages: AgentMessage[]): number {
 }
 
 export function shouldCompact(messages: AgentMessage[], options: CompactionOptions = {}): boolean {
-	const window = options.contextWindow ?? DEFAULT_WINDOW;
+	const window =
+		options.contextWindow !== undefined && Number.isFinite(options.contextWindow) && options.contextWindow > 0
+			? options.contextWindow
+			: DEFAULT_WINDOW;
 	const reserve = options.reserveTokens ?? DEFAULT_RESERVE;
 	return estimateTokens(messages) > window - reserve;
 }

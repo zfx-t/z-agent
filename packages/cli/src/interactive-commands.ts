@@ -11,7 +11,11 @@ export const INTERACTIVE_COMMANDS: readonly InteractiveCommand[] = [
 	{ name: "/compact", description: "Compact the active context" },
 	{ name: "/sessions", description: "Browse and resume saved sessions" },
 	{ name: "/status", description: "Show runtime status" },
+	{ name: "/model", description: "Show or set model context and parameters" },
 	{ name: "/commands", description: "Browse available commands" },
+	{ name: "/skills", description: "List skills or change context mode" },
+	{ name: "/skill", description: "Activate or deactivate a skill" },
+	{ name: "/reload", description: "Reload local skills" },
 	{ name: "/exit", description: "Exit z-agent" },
 ];
 

@@ -17,6 +17,8 @@ export interface CliArgs {
 	continueSession: boolean;
 	extensionPaths: string[];
 	promptParts: string[];
+	contextWindow?: number;
+	maxTokens?: number;
 	error?: string;
 }
 
@@ -36,6 +38,8 @@ export function parseArgs(argv: string[]): CliArgs {
 	let resume = false;
 	let continueSession = false;
 	const extensionPaths: string[] = [];
+	let contextWindow: number | undefined;
+	let maxTokens: number | undefined;
 	let error: string | undefined;
 	const promptParts: string[] = [];
 
@@ -86,14 +90,27 @@ export function parseArgs(argv: string[]): CliArgs {
 			arg === "--model" ||
 			arg === "--session-dir" ||
 			arg === "--session" ||
-			arg === "--extension"
+			arg === "--extension" ||
+			arg === "--context-window" ||
+			arg === "--max-tokens"
 		) {
 			const value = argv[i + 1];
 			if (!value || value.startsWith("-")) {
 				error = `Missing value for ${arg}`;
 				break;
 			}
-			if (arg === "--cwd") {
+			if (arg === "--context-window" || arg === "--max-tokens") {
+				const parsed = Number(value);
+				if (!/^\d+$/u.test(value) || !Number.isSafeInteger(parsed) || parsed <= 0) {
+					error = `Invalid value for ${arg}`;
+					break;
+				}
+				if (arg === "--context-window") {
+					contextWindow = parsed;
+				} else {
+					maxTokens = parsed;
+				}
+			} else if (arg === "--cwd") {
 				cwd = value;
 			} else if (arg === "--model") {
 				model = value;
@@ -131,6 +148,8 @@ export function parseArgs(argv: string[]): CliArgs {
 		continueSession,
 		extensionPaths,
 		promptParts,
+		contextWindow,
+		maxTokens,
 		error,
 	};
 }
@@ -159,6 +178,8 @@ Flags:
   --durable          Use L5 harness (JSONL op.state)
   --list-models      List configured model aliases
   --list-sessions    List sessions for --cwd
+  --context-window <n>  Override context window tokens
+  --max-tokens <n>      Override max output tokens
   -h, --help         Help
 
 Interactive commands:
@@ -168,6 +189,8 @@ Env:
   OPENAI_API_KEY    API key (or config.json apiKey)
   OPENAI_BASE_URL   Optional
   OPENAI_MODEL      Alias or raw model id
+  OPENAI_CONTEXT_WINDOW  Optional context window
+  OPENAI_MAX_TOKENS      Optional max output tokens
   PILLOW_HOME       Override ~/.pillow
 
 Config:

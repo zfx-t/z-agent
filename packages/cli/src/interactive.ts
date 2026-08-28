@@ -1,15 +1,19 @@
 import type { Agent, AgentEvent, AgentMessage, AgentToolResult } from "@z-agent/agent";
 import type { InteractiveTui } from "@z-agent/tui";
 import { commandMenuItems, INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
+import type { SkillInputCoordinator } from "./skill-commands.ts";
 
 const TOOL_RESULT_PREVIEW_CHARS = 720;
 
-export function submitTuiInputDuringRun(agent: Pick<Agent, "steer">, text: string): void {
-	agent.steer({
-		role: "user",
-		content: [{ type: "text", text }],
-		timestamp: Date.now(),
-	});
+export function submitTuiInputDuringRun(
+	target: Pick<Agent, "steer"> | Pick<SkillInputCoordinator, "enqueueDuringRun">,
+	text: string,
+): void {
+	if ("enqueueDuringRun" in target) {
+		target.enqueueDuringRun(text);
+		return;
+	}
+	target.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
 }
 
 export function subscribeTui(agent: Agent, tui: InteractiveTui): () => void {
@@ -74,31 +78,55 @@ export async function runInteractive(options: {
 	agent: Agent;
 	tui: InteractiveTui;
 	hasModel?: boolean;
+	input?: SkillInputCoordinator;
 	onNew?: () => Promise<void> | void;
+	onReset?: () => Promise<void> | void;
 	onCompact?: () => Promise<void>;
 	listSessions?: () => Promise<string[]>;
 	onLoadSession?: (id: string) => Promise<AgentMessage[]>;
+	formatStatus?: () => string;
+	onModel?: (args: string) => Promise<void> | void;
 }): Promise<void> {
+	const unsubscribeInput = options.input?.subscribe();
 	const unsubscribe = subscribeTui(options.agent, options.tui);
 	options.tui.start();
 	if (options.hasModel === false) {
 		options.tui.appendNotice("warning", "no model in use");
 	}
 	try {
-		while (true) {
-			let line = await options.tui.readPrompt();
-			if (line === null || line === "/exit" || line === "/quit") {
-				break;
+		const processLine = async (submitted: string): Promise<"continue" | "exit"> => {
+			const result = options.input ? await options.input.submit(submitted) : undefined;
+			if (result?.kind === "handled") {
+				return "continue";
+			}
+			if (result?.kind === "request") {
+				if (options.hasModel === false) {
+					options.tui.appendNotice("warning", "no model in use");
+					return "continue";
+				}
+				try {
+					await options.agent.prompt(result.message);
+				} catch (error) {
+					options.tui.appendNotice("error", error instanceof Error ? error.message : String(error));
+				}
+				if (options.agent.state.errorMessage) {
+					options.tui.appendNotice("error", options.agent.state.errorMessage);
+				}
+				return "continue";
+			}
+
+			const builtin = result?.kind === "builtin" ? result : undefined;
+			let line = builtin ? `${builtin.name}${builtin.args ? ` ${builtin.args}` : ""}` : submitted;
+			if (line === "/exit" || line === "/quit") {
+				return "exit";
 			}
 			if (line === "/commands" || line === "/help") {
 				const index = await options.tui.pickFromList("Commands", commandMenuItems(), { cancelValue: -1 });
 				if (index < 0) {
-					continue;
+					return "continue";
 				}
 				line = INTERACTIVE_COMMANDS[index]?.name ?? "/commands";
-			}
-			if (line === "/exit" || line === "/quit") {
-				break;
+				return await processLine(line);
 			}
 			if (line === "/new") {
 				if (options.onNew) {
@@ -108,45 +136,58 @@ export async function runInteractive(options: {
 				}
 				options.tui.clearTranscript();
 				options.tui.appendLine("[new] fresh conversation");
-				continue;
+				return "continue";
 			}
 			if (line === "/reset") {
-				options.agent.reset();
+				if (options.onReset) {
+					await options.onReset();
+				} else {
+					options.agent.reset();
+				}
 				options.tui.appendLine("[reset]");
-				continue;
+				return "continue";
 			}
 			if (line === "/clear") {
 				options.tui.clearTranscript();
-				continue;
+				return "continue";
 			}
-			if (line === "/status") {
-				options.tui.showStatus();
-				continue;
+			if (builtin?.name === "/status" || line === "/status") {
+				if (options.formatStatus) {
+					options.tui.appendLine(options.formatStatus());
+				} else {
+					options.tui.showStatus();
+				}
+				return "continue";
+			}
+			if (builtin?.name === "/model" || line === "/model" || line.startsWith("/model ")) {
+				const args = builtin?.args ?? line.slice("/model".length).trim();
+				await options.onModel?.(args);
+				return "continue";
 			}
 			if (line === "/compact") {
 				await options.onCompact?.();
 				options.tui.appendLine("[compact]");
-				continue;
+				return "continue";
 			}
 			if (line === "/sessions" || line === "/resume") {
 				const ids = (await options.listSessions?.()) ?? [];
 				if (ids.length === 0) {
 					options.tui.appendLine("no sessions");
-					continue;
+					return "continue";
 				}
 				const index = await options.tui.pickFromList("Resume session", ids, { cancelValue: -1 });
 				if (index < 0 || !options.onLoadSession) {
-					continue;
+					return "continue";
 				}
 				const messages = await options.onLoadSession(ids[index]);
 				options.agent.reset();
 				options.agent.state.messages = messages;
 				options.tui.appendLine(`[sessions] loaded ${ids[index]}`);
-				continue;
+				return "continue";
 			}
 			if (options.hasModel === false) {
 				options.tui.appendNotice("warning", "no model in use");
-				continue;
+				return "continue";
 			}
 			try {
 				await options.agent.prompt(line);
@@ -156,8 +197,20 @@ export async function runInteractive(options: {
 			if (options.agent.state.errorMessage) {
 				options.tui.appendNotice("error", options.agent.state.errorMessage);
 			}
+			return "continue";
+		};
+
+		let pendingLine: string | undefined;
+		while (true) {
+			const line = pendingLine ?? (await options.tui.readPrompt());
+			pendingLine = undefined;
+			if (line === null || (await processLine(line)) === "exit") {
+				break;
+			}
+			pendingLine = options.input?.takePendingAfterIdle();
 		}
 	} finally {
+		unsubscribeInput?.();
 		unsubscribe();
 		options.tui.close();
 	}

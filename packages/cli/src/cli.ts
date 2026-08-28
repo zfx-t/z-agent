@@ -2,20 +2,34 @@
  * z-agent product CLI: TUI + print, coding tools, sessions, skills, optional L5.
  */
 
-import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { stdin } from "node:process";
 import { Agent, type AgentMessage, createAllTools } from "@z-agent/agent";
 import { createOpenAIResponsesModel, createOpenAIResponsesStream, type StreamFn } from "@z-agent/ai";
 import { JsonlOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
-import { InteractiveTui } from "@z-agent/tui";
+import { InteractiveTui, type TuiCompletionCandidate } from "@z-agent/tui";
 import { SigintAbort } from "./abort.ts";
 import { looksLikeReasoningModel, parseArgs, printHelp } from "./args.ts";
 import { applyCompactionToSession, needsCompaction } from "./compaction.ts";
-import { ensureStarterConfig, loadCatalog, modelRefFromArgs, NO_MODEL_WARNING, resolveModel } from "./config.ts";
+import {
+	ensureStarterConfig,
+	loadCatalog,
+	modelRefFromArgs,
+	NO_MODEL_WARNING,
+	persistAliasSettings,
+	resolveModel,
+} from "./config.ts";
 import { createConfirmGate } from "./confirm.ts";
 import { composeBefore, discoverExtensionPaths, type Extension, loadExtension } from "./extensions.ts";
 import { runInteractive, submitTuiInputDuringRun } from "./interactive.ts";
+import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
+import {
+	formatCompactContext,
+	formatListModelsLine,
+	formatRuntimeStatus,
+	modelSettingsView,
+	reduceModelSettings,
+} from "./model-settings.ts";
 import { prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
 import { runPrint } from "./print.ts";
 import {
@@ -25,10 +39,12 @@ import {
 	listSessionIds,
 	loadSession,
 	messagesOnLeaf,
+	resetSessionBranch,
 	type SessionRecord,
 	saveSession,
 } from "./sessions.ts";
-import { formatSkillsPrompt, loadSkills } from "./skills.ts";
+import { type SkillCommandLevel, SkillInputCoordinator } from "./skill-commands.ts";
+import { createSkillManager, extractSkillPathHints, isPersistableAgentMessage } from "./skill-manager.ts";
 import { buildCodingSystemPrompt } from "./system-prompt.ts";
 import { askYesNo, ensureProjectTrust } from "./trust.ts";
 
@@ -40,20 +56,51 @@ async function readStdinText(): Promise<string> {
 	return Buffer.concat(chunks).toString("utf-8").trim();
 }
 
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
+function syncSession(session: SessionRecord, messages: AgentMessage[]): void {
+	const persistable = messages.filter(isPersistableAgentMessage);
+	const have = messagesOnLeaf(session).length;
+	for (const message of persistable.slice(have)) {
+		appendMessage(session, message);
 	}
 }
 
-function syncSession(session: SessionRecord, messages: AgentMessage[]): void {
-	const have = messagesOnLeaf(session).length;
-	for (const message of messages.slice(have)) {
-		appendMessage(session, message);
+function completionCandidates(skillManager: Awaited<ReturnType<typeof createSkillManager>>): TuiCompletionCandidate[] {
+	return [
+		...INTERACTIVE_COMMANDS.map((command) => ({
+			token: command.name,
+			description: command.description,
+			kind: "command" as const,
+		})),
+		...skillManager.getIndex().skills.map((skill) => ({
+			token: `/${skill.metadata.name}`,
+			description: skill.metadata.description,
+			kind: "skill" as const,
+		})),
+	];
+}
+
+function queuedMessageText(message: AgentMessage): string | undefined {
+	if (typeof message !== "object" || message === null || !("role" in message) || message.role !== "user") {
+		return undefined;
 	}
+	if (typeof message.content === "string") {
+		return message.content;
+	}
+	if (!Array.isArray(message.content)) {
+		return undefined;
+	}
+	return message.content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				typeof block === "object" &&
+				block !== null &&
+				"type" in block &&
+				block.type === "text" &&
+				"text" in block &&
+				typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
 }
 
 async function main(): Promise<void> {
@@ -82,8 +129,16 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 		for (const [alias, model] of Object.entries(loaded.catalog.models)) {
-			const marker = alias === loaded.catalog.defaultModel ? " *" : "";
-			console.log(`${alias}\t${model.id}${marker}`);
+			console.log(
+				formatListModelsLine({
+					alias,
+					id: model.id,
+					contextWindow: model.contextWindow,
+					maxTokens: model.maxTokens,
+					thinking: model.thinking,
+					isDefault: alias === loaded.catalog.defaultModel,
+				}),
+			);
 		}
 		return;
 	}
@@ -93,16 +148,15 @@ async function main(): Promise<void> {
 		}
 		return;
 	}
-	const resolved = resolveModel(modelRefFromArgs(args.model), loaded.catalog);
+	const resolved = resolveModel(modelRefFromArgs(args.model), loaded.catalog, process.env, {
+		contextWindow: args.contextWindow,
+		maxTokens: args.maxTokens,
+	});
 	if (!resolved.hasModel) {
 		console.error(resolved.warning);
 	}
 
 	const apiKey = resolved.hasModel ? resolved.apiKey : undefined;
-	if (resolved.hasModel && !apiKey) {
-		console.error("error: OPENAI_API_KEY is required (or set apiKey in ~/.pillow/config.json)");
-		process.exit(1);
-	}
 
 	const modelId = resolved.hasModel ? resolved.id : "unknown";
 	const jail = !args.noJail;
@@ -134,23 +188,36 @@ async function main(): Promise<void> {
 		session = createSession(cwd);
 	}
 
+	const skillManager = await createSkillManager({
+		cwd,
+		userPillow,
+		session,
+		contextWindow: resolved.hasModel ? resolved.contextWindow : undefined,
+		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
+	});
+	let settings = modelSettingsView({
+		hasModel: resolved.hasModel,
+		alias: resolved.hasModel ? resolved.alias : undefined,
+		id: resolved.hasModel ? resolved.id : undefined,
+		thinking: resolved.hasModel ? resolved.thinking : "off",
+		contextWindow: resolved.hasModel ? resolved.contextWindow : undefined,
+		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
+	});
 	const projectPillow = join(cwd, ".pillow");
-	const trusted = (await pathExists(projectPillow))
-		? await ensureProjectTrust(cwd, async () => {
-				if (autoYes) {
-					return true;
-				}
-				return await askYesNo(`Trust project resources in ${cwd}?`);
-			})
-		: true;
+	const extensionPaths = [...(await discoverExtensionPaths(cwd)), ...args.extensionPaths];
+	const trusted =
+		extensionPaths.length === 0
+			? true
+			: await ensureProjectTrust(cwd, async () => {
+					if (autoYes) {
+						return true;
+					}
+					return await askYesNo(`Trust project resources in ${cwd}?`);
+				});
 
-	const skills = trusted ? await loadSkills(cwd) : [];
 	const extensions: Extension[] = [];
 	if (trusted) {
-		for (const extPath of await discoverExtensionPaths(cwd)) {
-			extensions.push(await loadExtension(extPath, cwd));
-		}
-		for (const extPath of args.extensionPaths) {
+		for (const extPath of extensionPaths) {
 			extensions.push(await loadExtension(extPath, cwd));
 		}
 	}
@@ -159,7 +226,7 @@ async function main(): Promise<void> {
 		apiKey,
 		baseUrl: resolved.hasModel ? resolved.baseUrl : process.env.OPENAI_BASE_URL,
 	});
-	let tools = createAllTools(cwd, { jailRoot: jail ? cwd : false });
+	let tools = [...createAllTools(cwd, { jailRoot: jail ? cwd : false }), skillManager.createReadTool()];
 	if (args.durable) {
 		const store = new JsonlOpStore(join(projectPillow, "harness"));
 		streamFn = wrapStreamFn(streamFn, store);
@@ -167,19 +234,27 @@ async function main(): Promise<void> {
 	}
 
 	let agent!: Agent;
+	let input!: SkillInputCoordinator;
 	const abort = new SigintAbort(() => agent);
-	const statusModel = resolved.hasModel ? (resolved.alias ? `${resolved.alias}(${modelId})` : modelId) : "none";
 	const tui = !usePrint
 		? new InteractiveTui({
-				status: () => `model=${statusModel}  cwd=${cwd}`,
+				status: () =>
+					formatRuntimeStatus({
+						view: settings,
+						skillsMode: skillManager.getState().mode,
+						skillsActive: skillManager.getState().active.length,
+						cwd,
+					}).replace(/^\[status\] /, ""),
 				header: () => ({
 					cwd,
-					model: statusModel,
+					model: settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none",
+					context: formatCompactContext(settings.contextWindow),
 					session: session.header.id.slice(0, 12),
 				}),
 				onSubmitDuringRun: (line) => {
-					submitTuiInputDuringRun(agent, line);
+					submitTuiInputDuringRun(input, line);
 				},
+				completionCandidates: () => completionCandidates(skillManager),
 				onInterrupt: () => {
 					abort.handleSigint();
 				},
@@ -193,6 +268,7 @@ async function main(): Promise<void> {
 			const index = await tui.pickFromList("Sessions", ["(new session)", ...ids], { cancelValue: 0 });
 			if (index > 0) {
 				session = await loadSession(cwd, ids[index - 1], sessionRoot);
+				await skillManager.setSession(session);
 			}
 		}
 	}
@@ -216,6 +292,16 @@ async function main(): Promise<void> {
 	agent = new Agent({
 		streamFn,
 		apiKey,
+		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
+		prepareQueuedMessages: async (messages) => {
+			for (const message of messages) {
+				const text = queuedMessageText(message);
+				if (text !== undefined && text.trim().length > 0) {
+					await skillManager.prepareSnapshot({ text, pathHints: extractSkillPathHints(text) });
+				}
+			}
+			return messages;
+		},
 		beforeToolCall: composeBefore(confirmGate, extensions),
 		afterToolCall: async (context, signal) => {
 			for (const ext of extensions) {
@@ -226,19 +312,82 @@ async function main(): Promise<void> {
 			}
 			return undefined;
 		},
+		prepareContext: (context) => skillManager.prepareContext(context),
 		initialState: {
 			model,
 			thinkingLevel: resolved.hasModel ? resolved.thinking : "off",
-			systemPrompt: `${buildCodingSystemPrompt(cwd, jail)}${formatSkillsPrompt(skills)}`,
+			systemPrompt: buildCodingSystemPrompt(cwd, jail),
 			tools,
 			messages: messagesOnLeaf(session),
 		},
+	});
+	const writeSkillStatus = (level: SkillCommandLevel, text: string): void => {
+		if (tui) {
+			if (level === "info") {
+				tui.appendLine(text);
+			} else {
+				tui.appendNotice(level, text);
+			}
+			return;
+		}
+		if (level === "info") {
+			console.log(text);
+		} else {
+			console.error(text);
+		}
+	};
+	const applySettings = async (argsText: string): Promise<void> => {
+		const result = reduceModelSettings(settings, argsText);
+		if (result.kind === "error") {
+			writeSkillStatus("error", result.message);
+			return;
+		}
+		if (result.kind === "inspect") {
+			writeSkillStatus("info", result.text);
+			return;
+		}
+		settings = result.view;
+		agent.state.model = {
+			...agent.state.model,
+			contextWindow: settings.contextWindow,
+			maxTokens: settings.maxTokens,
+		};
+		agent.state.thinkingLevel = settings.thinking;
+		agent.maxTokens = settings.maxTokens;
+		skillManager.setBudget({
+			contextWindow: settings.contextWindow ?? 0,
+			maxTokens: settings.maxTokens,
+		});
+		if (result.persistPatch && settings.alias) {
+			try {
+				await persistAliasSettings(userPillow, settings.alias, result.persistPatch);
+				writeSkillStatus("info", result.text);
+			} catch (error) {
+				writeSkillStatus(
+					"warning",
+					`${result.text} persist=failed (${error instanceof Error ? error.message : String(error)})`,
+				);
+			}
+			return;
+		}
+		if (settings.persist === "session") {
+			writeSkillStatus("info", `${result.text} (not saved; no catalog alias)`);
+			return;
+		}
+		writeSkillStatus("info", result.text);
+	};
+	input = new SkillInputCoordinator({
+		agent,
+		manager: skillManager,
+		write: writeSkillStatus,
+		onReload: () => tui?.refreshCompletions(),
 	});
 
 	abort.attach();
 
 	const compactNow = async () => {
-		const { kept, summary } = await applyCompactionToSession(session, agent.state.messages, {
+		const transcript = agent.state.messages.filter(isPersistableAgentMessage);
+		const { kept, summary } = await applyCompactionToSession(session, transcript, {
 			contextWindow: agent.state.model.contextWindow,
 			streamFn,
 			model: agent.state.model,
@@ -250,9 +399,11 @@ async function main(): Promise<void> {
 	};
 
 	const persist = async () => {
-		syncSession(session, agent.state.messages);
-		if (needsCompaction(agent.state.messages, { contextWindow: agent.state.model.contextWindow })) {
+		const transcript = agent.state.messages.filter(isPersistableAgentMessage);
+		syncSession(session, transcript);
+		if (needsCompaction(transcript, { contextWindow: agent.state.model.contextWindow })) {
 			await compactNow();
+			syncSession(session, agent.state.messages.filter(isPersistableAgentMessage));
 		}
 		await saveSession(session, sessionRoot);
 	};
@@ -262,13 +413,34 @@ async function main(): Promise<void> {
 			console.error("error: prompt required");
 			process.exit(2);
 		}
-		if (!resolved.hasModel) {
-			console.error(NO_MODEL_WARNING);
+		console.error(
+			`[mode] print model=${settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none"} contextWindow=${settings.contextWindow ?? "unknown"} maxTokens=${settings.maxTokens ?? "unknown"} thinking=${settings.thinking} cwd=${cwd}`,
+		);
+		const printInput = await input.submit(prompt);
+		if (printInput.kind === "request") {
+			if (!resolved.hasModel) {
+				console.error(NO_MODEL_WARNING);
+				await persist();
+				abort.detach();
+				process.exit(1);
+			}
+			if (!apiKey) {
+				console.error("error: OPENAI_API_KEY is required (or set apiKey in ~/.pillow/config.json)");
+				await persist();
+				abort.detach();
+				process.exit(1);
+			}
+			await runPrint(agent, printInput.message, args.verbose);
+		} else if (printInput.kind === "builtin") {
+			console.error(`error: ${printInput.name} is only available in interactive mode`);
+			await persist();
 			abort.detach();
-			process.exit(1);
+			process.exit(2);
+		} else if (printInput.error) {
+			await persist();
+			abort.detach();
+			process.exit(2);
 		}
-		console.error(`[mode] print model=${statusModel} cwd=${cwd}`);
-		await runPrint(agent, prompt, args.verbose);
 		await persist();
 		abort.detach();
 		if (agent.state.errorMessage) {
@@ -284,20 +456,42 @@ async function main(): Promise<void> {
 	await runInteractive({
 		agent,
 		tui,
-		hasModel: resolved.hasModel,
+		hasModel: resolved.hasModel && Boolean(apiKey),
+		input,
 		onNew: async () => {
 			await persist();
 			session = createSession(cwd);
+			await skillManager.setSession(session);
+			agent.reset();
+		},
+		onReset: async () => {
+			resetSessionBranch(session);
+			await skillManager.setSession(session);
+			await skillManager.reset();
 			agent.reset();
 		},
 		onCompact: async () => {
 			await compactNow();
+			syncSession(session, agent.state.messages.filter(isPersistableAgentMessage));
 			await saveSession(session, sessionRoot);
 		},
 		listSessions: async () => await listSessionIds(cwd, sessionRoot),
 		onLoadSession: async (id) => {
+			await persist();
 			session = await loadSession(cwd, id, sessionRoot);
-			return messagesOnLeaf(session);
+			await skillManager.setSession(session);
+			const messages = messagesOnLeaf(session);
+			return messages;
+		},
+		formatStatus: () =>
+			formatRuntimeStatus({
+				view: settings,
+				skillsMode: skillManager.getState().mode,
+				skillsActive: skillManager.getState().active.length,
+				cwd,
+			}),
+		onModel: async (modelArgs) => {
+			await applySettings(modelArgs);
 		},
 	});
 	await persist();

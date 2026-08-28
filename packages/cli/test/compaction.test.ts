@@ -43,6 +43,11 @@ describe("compaction", () => {
 		expect(shouldCompact([user("hi")], { contextWindow: 8_000, reserveTokens: 1_000 })).toBe(false);
 	});
 
+	it("treats a missing or non-positive window as the default window", () => {
+		expect(shouldCompact([user("hi")], { contextWindow: 0 })).toBe(false);
+		expect(shouldCompact([user("hi")], { contextWindow: Number.NaN })).toBe(false);
+	});
+
 	it("triggers on assistant length overflow", () => {
 		const assistant: AgentMessage = {
 			role: "assistant",

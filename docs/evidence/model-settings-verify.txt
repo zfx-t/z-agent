@@ -1,0 +1,49 @@
+=== npm test --workspace @z-agent/cli -- test/interactive.test.ts test/args.test.ts test/model-settings.test.ts test/config.test.ts test/slash.test.ts test/skill-manager.test.ts test/compaction.test.ts test/smoke.test.ts ===
+
+> @z-agent/cli@0.0.0 test
+> vitest --run test/interactive.test.ts test/args.test.ts test/model-settings.test.ts test/config.test.ts test/slash.test.ts test/skill-manager.test.ts test/compaction.test.ts test/smoke.test.ts
+
+
+ RUN  v3.2.4 /home/zeroth/ForMe/z-agent/packages/cli
+
+ ✓ test/model-settings.test.ts (6 tests) 9ms
+ ✓ test/interactive.test.ts (4 tests) 22ms
+ ✓ test/args.test.ts (7 tests) 10ms
+ ✓ test/slash.test.ts (7 tests) 12ms
+ ✓ test/config.test.ts (8 tests) 31ms
+ ✓ test/compaction.test.ts (5 tests) 7ms
+ ✓ test/skill-manager.test.ts (9 tests) 157ms
+ ✓ test/smoke.test.ts (5 tests) 1902ms
+   ✓ @z-agent/cli smoke > exits 1 without OPENAI_API_KEY  517ms
+   ✓ @z-agent/cli smoke > exits 2 on unknown flags  408ms
+   ✓ @z-agent/cli smoke > exits 0 on --help  375ms
+   ✓ @z-agent/cli smoke > lists configured models without requiring an API key  317ms
+
+ Test Files  8 passed (8)
+      Tests  51 passed (51)
+   Start at  20:12:59
+   Duration  2.81s (transform 1.07s, setup 0ms, collect 2.24s, tests 2.15s, environment 3ms, prepare 2.02s)
+
+
+=== npm test --workspace @z-agent/tui -- test/tui.test.ts ===
+
+> @z-agent/tui@0.0.0 test
+> vitest --run test/tui.test.ts
+
+
+ RUN  v3.2.4 /home/zeroth/ForMe/z-agent/packages/tui
+
+ ✓ test/tui.test.ts (30 tests) 39ms
+
+ Test Files  1 passed (1)
+      Tests  30 passed (30)
+   Start at  20:13:02
+   Duration  524ms (transform 135ms, setup 0ms, collect 156ms, tests 39ms, environment 0ms, prepare 67ms)
+
+
+=== npm run check ===
+
+> check
+> biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/tui/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit && tsc -p packages/harness/tsconfig.json --noEmit && tsc -p packages/skills/tsconfig.json --noEmit
+
+Checked 113 files in 112ms. Fixed 1 file.

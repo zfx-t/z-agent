@@ -1,0 +1,6 @@
+=== PILLOW_HOME=/tmp/pillow-model-settings-proof npm run z-agent -- --list-models ===
+
+> z-agent
+> node packages/cli/bin/z-agent.mjs --list-models
+
+fast	gpt-4.1-mini	128000	4096	- *

@@ -6,9 +6,14 @@ import {
 	ensureStarterConfig,
 	NO_MODEL_WARNING,
 	parseCatalog,
+	persistAliasSettings,
 	resolveModel,
 	STARTER_ALIAS,
+	STARTER_CONTEXT_WINDOW,
+	STARTER_MAX_TOKENS,
 	STARTER_MODEL_ID,
+	saveCatalog,
+	updateAliasSettings,
 } from "../src/config.ts";
 
 describe("parseCatalog + resolveModel", () => {
@@ -70,8 +75,77 @@ describe("ensureStarterConfig", () => {
 		const first = await readFile(path, "utf-8");
 		expect(JSON.parse(first).defaultModel).toBe(STARTER_ALIAS);
 		expect(JSON.parse(first).models[STARTER_ALIAS].id).toBe(STARTER_MODEL_ID);
+		expect(JSON.parse(first).models[STARTER_ALIAS].contextWindow).toBe(STARTER_CONTEXT_WINDOW);
+		expect(JSON.parse(first).models[STARTER_ALIAS].maxTokens).toBe(STARTER_MAX_TOKENS);
 		await writeFile(path, `${first}\n# stay\n`, "utf-8");
 		await ensureStarterConfig(dir);
 		expect(await readFile(path, "utf-8")).toBe(`${first}\n# stay\n`);
+	});
+});
+
+describe("alias settings persist", () => {
+	it("patches one alias without dropping siblings or apiKey", () => {
+		const catalog = {
+			version: 1 as const,
+			defaultModel: "fast",
+			models: {
+				fast: { id: "gpt-4.1-mini", apiKey: "sk-keep", contextWindow: 128_000 },
+				smart: { id: "gpt-5", thinking: "high" as const },
+			},
+		};
+		const next = updateAliasSettings(catalog, "fast", { contextWindow: 200_000, maxTokens: 8_192 });
+		expect(next.models.fast).toEqual({
+			id: "gpt-4.1-mini",
+			apiKey: "sk-keep",
+			contextWindow: 200_000,
+			maxTokens: 8_192,
+		});
+		expect(next.models.smart).toEqual({ id: "gpt-5", thinking: "high" });
+	});
+
+	it("writes 0600 and reloads the latest file before patching", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "z-pillow-save-"));
+		await saveCatalog(dir, {
+			version: 1,
+			defaultModel: "fast",
+			models: { fast: { id: "gpt-4.1-mini", apiKey: "sk-file", contextWindow: 128_000 } },
+		});
+		await persistAliasSettings(dir, "fast", { contextWindow: 256_000, thinking: "low" });
+		const raw = JSON.parse(await readFile(join(dir, "config.json"), "utf-8"));
+		expect(raw.models.fast).toMatchObject({
+			id: "gpt-4.1-mini",
+			apiKey: "sk-file",
+			contextWindow: 256_000,
+			thinking: "low",
+		});
+	});
+
+	it("prefers CLI overrides, then env, then catalog", () => {
+		const catalog = parseCatalog(
+			JSON.stringify({
+				version: 1,
+				defaultModel: "fast",
+				models: { fast: { id: "gpt-4.1-mini", contextWindow: 128_000, maxTokens: 4_096 } },
+			}),
+		).catalog;
+		const file = resolveModel("fast", catalog, {});
+		expect(file.hasModel && file.contextWindow).toBe(128_000);
+		const env = resolveModel("fast", catalog, {
+			OPENAI_CONTEXT_WINDOW: "200000",
+			OPENAI_MAX_TOKENS: "2048",
+		});
+		expect(env.hasModel && env.contextWindow).toBe(200_000);
+		expect(env.hasModel && env.maxTokens).toBe(2_048);
+		const flag = resolveModel(
+			"fast",
+			catalog,
+			{ OPENAI_CONTEXT_WINDOW: "200000", OPENAI_MAX_TOKENS: "2048" },
+			{ contextWindow: 300_000, maxTokens: 512 },
+		);
+		expect(flag.hasModel && flag.contextWindow).toBe(300_000);
+		expect(flag.hasModel && flag.maxTokens).toBe(512);
+		const raw = resolveModel("gpt-4.1", catalog, {});
+		expect(raw.hasModel && raw.contextWindow).toBeUndefined();
+		expect(raw.hasModel && raw.maxTokens).toBeUndefined();
 	});
 });

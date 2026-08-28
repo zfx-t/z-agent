@@ -33,6 +33,15 @@ describe("parseArgs", () => {
 	it("rejects unknown flags", () => {
 		expect(parseArgs(["--bogus"]).error).toBe("Unknown flag: --bogus");
 	});
+
+	it("parses context window and max token flags", () => {
+		const args = parseArgs(["--context-window", "200000", "--max-tokens", "8192"]);
+		expect(args.contextWindow).toBe(200_000);
+		expect(args.maxTokens).toBe(8_192);
+		expect(parseArgs(["--context-window", "0"]).error).toBe("Invalid value for --context-window");
+		expect(parseArgs(["--context-window", "12345678901234567890"]).error).toBe("Invalid value for --context-window");
+		expect(parseArgs(["--max-tokens"]).error).toBe("Missing value for --max-tokens");
+	});
 });
 
 describe("looksLikeReasoningModel / resolveModelId / help", () => {
@@ -59,5 +68,8 @@ describe("looksLikeReasoningModel / resolveModelId / help", () => {
 		expect(help).toContain("TUI");
 		expect(help).toContain("--no-jail");
 		expect(help).toContain("--list-models");
+		expect(help).toContain("--context-window");
+		expect(help).toContain("--max-tokens");
+		expect(help).toContain("OPENAI_CONTEXT_WINDOW");
 	});
 });

@@ -51,10 +51,13 @@ describe("@z-agent/cli smoke", () => {
 	});
 
 	it("lists configured models without requiring an API key", () => {
-		const result = runCli(["--list-models"], { OPENAI_API_KEY: "" });
+		const dir = mkdtempSync(join(tmpdir(), "z-smoke-list-models-"));
+		const result = runCli(["--list-models"], { OPENAI_API_KEY: "", PILLOW_HOME: dir });
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("fast");
 		expect(result.stdout).toContain("gpt-4.1-mini");
+		expect(result.stdout).toContain("128000");
+		expect(result.stdout).toContain("4096");
 	});
 
 	it("print warns when config is broken and no model is set", () => {

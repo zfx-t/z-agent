@@ -1,7 +1,7 @@
 import type { Agent, AgentEvent } from "@z-agent/agent";
 import type { InteractiveTui } from "@z-agent/tui";
 import { describe, expect, it, vi } from "vitest";
-import { submitTuiInputDuringRun, subscribeTui } from "../src/interactive.ts";
+import { runInteractive, submitTuiInputDuringRun, subscribeTui } from "../src/interactive.ts";
 
 describe("interactive TUI adaptation", () => {
 	it("maps one tool lifecycle onto one structured TUI entry", () => {
@@ -70,5 +70,74 @@ describe("interactive TUI adaptation", () => {
 			role: "user",
 			content: [{ type: "text", text: "preserve offsets" }],
 		});
+	});
+
+	it("handles /status and /model without a coordinator and never prompts the agent", async () => {
+		const prompts = ["/status", "/model context 200000", "/exit"];
+		let promptIndex = 0;
+		const lines: string[] = [];
+		const notices: Array<[string, string]> = [];
+		const modelArgs: string[] = [];
+		const prompt = vi.fn();
+		const unsubscribe = vi.fn();
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			showStatus: vi.fn(),
+			appendLine: (line: string) => {
+				lines.push(line);
+			},
+			appendNotice: (kind: string, message: string) => {
+				notices.push([kind, message]);
+			},
+			readPrompt: async () => prompts[promptIndex++] ?? null,
+		} as unknown as InteractiveTui;
+		const agent = {
+			prompt,
+			subscribe: () => unsubscribe,
+			state: {},
+		} as unknown as Agent;
+
+		await runInteractive({
+			agent,
+			tui,
+			formatStatus: () => "[status] wired",
+			onModel: async (args) => {
+				modelArgs.push(args);
+			},
+		});
+
+		expect(tui.start).toHaveBeenCalledOnce();
+		expect(tui.close).toHaveBeenCalledOnce();
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		expect(lines).toContain("[status] wired");
+		expect(modelArgs).toEqual(["context 200000"]);
+		expect(prompt).not.toHaveBeenCalled();
+		expect(tui.showStatus).not.toHaveBeenCalled();
+		expect(notices).toEqual([]);
+	});
+
+	it("swallows coordinator-less /model when onModel is missing", async () => {
+		const prompts = ["/model context 200000", "/exit"];
+		let promptIndex = 0;
+		const prompt = vi.fn();
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			showStatus: vi.fn(),
+			appendLine: vi.fn(),
+			appendNotice: vi.fn(),
+			readPrompt: async () => prompts[promptIndex++] ?? null,
+		} as unknown as InteractiveTui;
+		const agent = {
+			prompt,
+			subscribe: () => () => {},
+			state: {},
+		} as unknown as Agent;
+
+		await runInteractive({ agent, tui });
+
+		expect(prompt).not.toHaveBeenCalled();
+		expect(tui.close).toHaveBeenCalledOnce();
 	});
 });
