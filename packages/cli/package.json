@@ -24,6 +24,7 @@
 		"@z-agent/agent": "0.0.0",
 		"@z-agent/ai": "0.0.0",
 		"@z-agent/harness": "0.0.0",
+		"@z-agent/skills": "0.0.0",
 		"@z-agent/tui": "0.0.0",
 		"zod": "3.25.76"
 	}
