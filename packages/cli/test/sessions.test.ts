@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	appendCompaction,
 	appendMessage,
 	branch,
 	createSession,
 	latestSessionId,
 	loadSession,
 	messagesOnLeaf,
+	resetSessionBranch,
 	rootToLeaf,
 	saveSession,
 } from "../src/sessions.ts";
@@ -25,7 +27,7 @@ describe("session tree", () => {
 		const branched = branch(session, mid.id);
 		expect(
 			rootToLeaf(branched).map((node) =>
-				node.message && "content" in node.message ? JSON.stringify(node.message.content) : "",
+				node.type === "message" && "content" in node.message ? JSON.stringify(node.message.content) : "",
 			),
 		).toHaveLength(2);
 
@@ -39,5 +41,21 @@ describe("session tree", () => {
 		await saveSession(session, root);
 		const loaded = await loadSession("/tmp/proj", session.header.id, root);
 		expect(messagesOnLeaf(loaded)).toHaveLength(3);
+	});
+
+	it("projects compaction and reset boundaries while retaining append-only history", () => {
+		const session = createSession("/tmp/proj");
+		appendMessage(session, { role: "user", content: [{ type: "text", text: "old" }], timestamp: 1 });
+		appendCompaction(session, "summary");
+		appendMessage(session, { role: "user", content: [{ type: "text", text: "tail" }], timestamp: 2 });
+
+		expect(messagesOnLeaf(session)).toMatchObject([
+			{ role: "user", content: [{ type: "text", text: "summary" }] },
+			{ role: "user", content: [{ type: "text", text: "tail" }] },
+		]);
+		const retainedNodes = session.nodes.length;
+		resetSessionBranch(session);
+		expect(messagesOnLeaf(session)).toEqual([]);
+		expect(session.nodes).toHaveLength(retainedNodes);
 	});
 });
