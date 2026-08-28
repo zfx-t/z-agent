@@ -199,7 +199,11 @@ export async function runLoop(
 	let config = initialConfig;
 	let firstTurn = true;
 	// Steering may already be queued when the run starts (user typed while waiting).
-	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) ?? [];
+	let pendingMessages: AgentMessage[] = await prepareQueuedMessages(
+		config,
+		(await config.getSteeringMessages?.()) ?? [],
+		"steering",
+	);
 
 	// Outer loop: continues when follow-up messages arrive after the agent would stop.
 	while (true) {
@@ -293,11 +297,19 @@ export async function runLoop(
 			}
 
 			// Steering after turn completes (tools finished); does not skip pending tools.
-			pendingMessages = (await config.getSteeringMessages?.()) ?? [];
+			pendingMessages = await prepareQueuedMessages(
+				config,
+				(await config.getSteeringMessages?.()) ?? [],
+				"steering",
+			);
 		}
 
 		// Agent would stop here. Check for follow-up messages.
-		const followUpMessages = (await config.getFollowUpMessages?.()) ?? [];
+		const followUpMessages = await prepareQueuedMessages(
+			config,
+			(await config.getFollowUpMessages?.()) ?? [],
+			"follow-up",
+		);
 		if (followUpMessages.length > 0) {
 			pendingMessages = followUpMessages;
 			continue;
@@ -307,6 +319,17 @@ export async function runLoop(
 	}
 
 	await emit({ type: "agent_end", messages: newMessages });
+}
+
+async function prepareQueuedMessages(
+	config: AgentLoopConfig,
+	messages: AgentMessage[],
+	kind: "steering" | "follow-up",
+): Promise<AgentMessage[]> {
+	if (!config.prepareQueuedMessages || messages.length === 0) {
+		return messages;
+	}
+	return await config.prepareQueuedMessages(messages, kind);
 }
 
 // ---------------------------------------------------------------------------

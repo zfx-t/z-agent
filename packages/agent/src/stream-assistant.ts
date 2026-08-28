@@ -2,8 +2,8 @@
  * Provider effect boundary (ADR-0010): the only place the agent core consumes StreamFn.
  *
  * Keeps a partial assistant message in `context.messages` during the stream and
- * emits message_start / message_update / message_end. Applies transformContext
- * then convertToLlm before the provider call (ADR-0006).
+ * emits message_start / message_update / message_end. Applies prepareContext,
+ * transformContext, then convertToLlm before the provider call (ADR-0006).
  */
 
 import type { AssistantMessage, Context, Message, StreamFn, StreamOptions } from "@z-agent/ai";
@@ -26,6 +26,17 @@ function failureAssistantMessage(config: AgentLoopConfig, error: unknown, aborte
 	};
 }
 
+function snapshotAgentMessage(message: AgentMessage): AgentMessage {
+	if (typeof message !== "object" || message === null) {
+		return message;
+	}
+	const copy = { ...message } as unknown as { content?: unknown };
+	if (Array.isArray(copy.content)) {
+		copy.content = copy.content.map((block) => (typeof block === "object" && block !== null ? { ...block } : block));
+	}
+	return copy as AgentMessage;
+}
+
 /**
  * Stream one assistant turn from the LLM into `context.messages`.
  *
@@ -41,9 +52,18 @@ export async function streamAssistant(
 	emit: AgentEventSink,
 	streamFn: StreamFn,
 ): Promise<AssistantMessage> {
+	let preparedContext = context;
+	if (config.prepareContext) {
+		preparedContext = await config.prepareContext({
+			...context,
+			messages: context.messages.map(snapshotAgentMessage),
+			tools: context.tools?.slice(),
+		});
+	}
+
 	// AgentMessage[] → AgentMessage[] (optional prune / inject).
 	// transformContext must treat input as read-only and return a new array when changing it.
-	let messages: AgentMessage[] = context.messages;
+	let messages: AgentMessage[] = preparedContext.messages;
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
@@ -51,9 +71,9 @@ export async function streamAssistant(
 	// AgentMessage[] → LLM Message[] (required dual-layer boundary)
 	const llmMessages: Message[] = await config.convertToLlm(messages);
 
-	const llmTools = agentToolsToLlmTools(context.tools ?? []);
+	const llmTools = agentToolsToLlmTools(preparedContext.tools ?? []);
 	const llmContext: Context = {
-		systemPrompt: context.systemPrompt,
+		systemPrompt: preparedContext.systemPrompt,
 		messages: llmMessages,
 		...(llmTools.length > 0 ? { tools: llmTools } : {}),
 	};

@@ -93,6 +93,8 @@ export interface AgentOptions {
 	/** Required StreamFn (provider effect boundary via streamAssistant). */
 	streamFn: StreamFn;
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	/** Pure, request-local context preparation run immediately before each provider call. */
+	prepareContext?: (context: AgentContext) => AgentContext | Promise<AgentContext>;
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]> | AgentMessage[];
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
@@ -111,6 +113,11 @@ export interface AgentOptions {
 	steeringMode?: QueueMode;
 	/** How queued follow-up messages are drained (default `"one-at-a-time"`). */
 	followUpMode?: QueueMode;
+	/** Prepare queued messages before they enter a later provider request. */
+	prepareQueuedMessages?: (
+		messages: AgentMessage[],
+		kind: "steering" | "follow-up",
+	) => AgentMessage[] | Promise<AgentMessage[]>;
 	sessionId?: string;
 	apiKey?: string;
 	temperature?: number;
@@ -178,6 +185,7 @@ export class Agent {
 	private readonly followUpQueue: PendingMessageQueue;
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	public prepareContext?: (context: AgentContext) => AgentContext | Promise<AgentContext>;
 	public transformContext?: (
 		messages: AgentMessage[],
 		signal?: AbortSignal,
@@ -203,6 +211,10 @@ export class Agent {
 		context: PrepareNextTurnContext,
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
+	public prepareQueuedMessages?: (
+		messages: AgentMessage[],
+		kind: "steering" | "follow-up",
+	) => AgentMessage[] | Promise<AgentMessage[]>;
 	public toolExecution: ToolExecutionMode;
 	public sessionId?: string;
 	public apiKey?: string;
@@ -216,6 +228,7 @@ export class Agent {
 	constructor(options: AgentOptions) {
 		this._state = createMutableAgentState(options.initialState);
 		this.convertToLlm = options.convertToLlm ?? defaultConvertToLlm;
+		this.prepareContext = options.prepareContext;
 		this.transformContext = options.transformContext;
 		this.streamFunction = options.streamFn;
 		this.getApiKey = options.getApiKey;
@@ -227,6 +240,7 @@ export class Agent {
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
+		this.prepareQueuedMessages = options.prepareQueuedMessages;
 		this.sessionId = options.sessionId;
 		this.apiKey = options.apiKey;
 		this.temperature = options.temperature;
@@ -372,14 +386,20 @@ export class Agent {
 		}
 
 		if (isAssistantRole(lastMessage)) {
-			const queuedSteering = this.steeringQueue.drain();
+			const queuedSteeringRaw = this.steeringQueue.drain();
+			const queuedSteering = this.prepareQueuedMessages
+				? await this.prepareQueuedMessages(queuedSteeringRaw, "steering")
+				: queuedSteeringRaw;
 			if (queuedSteering.length > 0) {
 				// Already drained for this prompt; skip the loop's initial steering poll.
 				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
 				return;
 			}
 
-			const queuedFollowUps = this.followUpQueue.drain();
+			const queuedFollowUpsRaw = this.followUpQueue.drain();
+			const queuedFollowUps = this.prepareQueuedMessages
+				? await this.prepareQueuedMessages(queuedFollowUpsRaw, "follow-up")
+				: queuedFollowUpsRaw;
 			if (queuedFollowUps.length > 0) {
 				await this.runPromptMessages(queuedFollowUps);
 				return;
@@ -453,6 +473,7 @@ export class Agent {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
 			convertToLlm: this.convertToLlm,
+			prepareContext: this.prepareContext,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
 			beforeToolCall: this.beforeToolCall,
@@ -483,6 +504,7 @@ export class Agent {
 				return this.steeringQueue.drain();
 			},
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			prepareQueuedMessages: this.prepareQueuedMessages,
 		};
 	}
 

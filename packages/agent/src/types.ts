@@ -326,6 +326,15 @@ export interface AgentLoopConfig {
 	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 
 	/**
+	 * Pure context preparation immediately before each provider request.
+	 *
+	 * Receives a shallow snapshot whose message and tool arrays are detached from
+	 * the live loop context. Return a new context when changing it; the result is
+	 * local to this provider request and is not written back to the transcript.
+	 */
+	prepareContext?: (context: AgentContext) => AgentContext | Promise<AgentContext>;
+
+	/**
 	 * Optional AgentMessage-level transform before `convertToLlm`
 	 * (pruning, inject context). Must not throw or reject.
 	 *
@@ -402,6 +411,12 @@ export interface AgentLoopConfig {
 	 * Contract: must not throw or reject. Return `[]` when nothing is pending.
 	 */
 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+
+	/** Prepare queued steering/follow-up messages before safe-boundary injection. */
+	prepareQueuedMessages?: (
+		messages: AgentMessage[],
+		kind: "steering" | "follow-up",
+	) => AgentMessage[] | Promise<AgentMessage[]>;
 
 	/** Optional StreamOptions fields forwarded to StreamFn (signal is separate). */
 	apiKey?: string;

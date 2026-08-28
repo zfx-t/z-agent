@@ -5,7 +5,9 @@
  * Default toolExecution is parallel three-phase; sequential when configured
  * or when any tool sets executionMode sequential.
  * Agent shell: prompt mutex, subscribe, abort, continue, steer / followUp queues.
- * Turn hooks: prepareNextTurn, shouldStopAfterTurn. thinkingLevel. agentLoop EventStream.
+ * Context hooks: prepareContext, transformContext, prepareNextTurn, shouldStopAfterTurn.
+ * Queue hooks: prepareQueuedMessages at steering/follow-up safe boundaries.
+ * thinkingLevel. agentLoop EventStream.
  */
 
 export const AGENT_PACKAGE = "@z-agent/agent" as const;

@@ -359,7 +359,7 @@ describe("Agent shell", () => {
 		expect(seenPending).toEqual([1, 0]);
 	});
 
-	it("wires beforeToolCall / afterToolCall / convertToLlm / transformContext", async () => {
+	it("wires prepareContext / transformContext / convertToLlm and tool hooks", async () => {
 		const order: string[] = [];
 		const tool: AgentTool = {
 			name: "t",
@@ -387,6 +387,10 @@ describe("Agent shell", () => {
 		const agent = new Agent({
 			streamFn: scripted.streamFn,
 			initialState: { model: scripted.model, tools: [tool] },
+			prepareContext: async (context) => {
+				order.push("prepare");
+				return { ...context, messages: context.messages.slice() };
+			},
 			transformContext: async (messages) => {
 				order.push("transform");
 				return messages;
@@ -415,7 +419,8 @@ describe("Agent shell", () => {
 
 		await agent.prompt("go");
 
-		expect(order).toEqual(["transform", "convert", "before", "execute", "after"]);
+		expect(order).toEqual(["prepare", "transform", "convert", "before", "execute", "after"]);
+		expect(agent.prepareContext).toBeDefined();
 		const toolResult = agent.state.messages.find((m) => m.role === "toolResult");
 		expect(toolResult?.role).toBe("toolResult");
 		if (toolResult?.role === "toolResult") {
@@ -858,6 +863,32 @@ describe("Agent shell", () => {
 		);
 		expect(hasFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1]?.role).toBe("assistant");
+	});
+
+	it("prepares follow-up messages at the queue boundary", async () => {
+		const scripted = createScriptedStream({ responses: [scriptedAssistantMessage("Processed")] });
+		const prepared: Array<{ kind: string; text: string }> = [];
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			prepareQueuedMessages: (messages, kind) => {
+				for (const message of messages) {
+					prepared.push({ kind, text: typeof message.content === "string" ? message.content : "" });
+				}
+				return messages;
+			},
+			initialState: {
+				model: scripted.model,
+				messages: [
+					{ role: "user", content: "Initial", timestamp: 1 },
+					scriptedAssistantMessage("Initial response"),
+				],
+			},
+		});
+
+		agent.followUp({ role: "user", content: "Queued follow-up", timestamp: 2 });
+		await agent.continue();
+
+		expect(prepared).toEqual([{ kind: "follow-up", text: "Queued follow-up" }]);
 	});
 
 	it("reset clears queues", () => {

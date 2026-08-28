@@ -26,7 +26,9 @@ export function composeAgentEventSinks(sinks: readonly AgentEventSink[]): AgentE
 	// Snapshot so mid-fan-out mutation of the caller's array cannot change which sinks run.
 	const snapshot = sinks.slice();
 	return async (event) => {
-		await Promise.all(snapshot.map((sink) => sink(event)));
+		for (const sink of snapshot) {
+			await sink(event);
+		}
 	};
 }
 

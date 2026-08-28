@@ -225,7 +225,157 @@ describe("runAgentLoop error / aborted", () => {
 	});
 });
 
-describe("convertToLlm / transformContext", () => {
+describe("prepareContext / convertToLlm / transformContext", () => {
+	it("prepares an isolated context before every provider request", async () => {
+		const echoSchema = z.object({ text: z.string() });
+		const tool: AgentTool<typeof echoSchema> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo text",
+			parameters: echoSchema,
+			async execute(_id, params) {
+				return { content: [{ type: "text", text: params.text }], details: {} };
+			},
+		};
+		const marker = user("provider-only", 99);
+		const hookContexts: AgentContext[] = [];
+		const hookMessageLengths: number[] = [];
+		const order: string[] = [];
+		const scripted = createScriptedStream({
+			responses: [
+				(context) => {
+					order.push("stream-1");
+					expect(context.systemPrompt).toBe("base\nprepared");
+					expect(context.tools).toBeUndefined();
+					expect(context.messages.at(-1)).toEqual(marker);
+					return scriptedAssistantMessage([scriptedToolCall("echo", { text: "ok" }, { id: "echo-1" })], {
+						stopReason: "toolUse",
+					});
+				},
+				(context) => {
+					order.push("stream-2");
+					expect(context.messages.filter((message) => message === marker)).toHaveLength(1);
+					expect(context.messages.at(-1)).toEqual(marker);
+					return scriptedAssistantMessage("done");
+				},
+			],
+		});
+		const liveContext: AgentContext = {
+			systemPrompt: "base",
+			messages: [],
+			tools: [tool],
+		};
+
+		const newMessages = await runAgentLoop(
+			[user("start")],
+			liveContext,
+			{
+				model: scripted.model,
+				prepareContext: async (context) => {
+					order.push(`prepare-${hookContexts.length + 1}`);
+					hookContexts.push(context);
+					hookMessageLengths.push(context.messages.length);
+					expect(context.messages).not.toContain(marker);
+					expect(context.tools).not.toBe(liveContext.tools);
+					return {
+						...context,
+						systemPrompt: `${context.systemPrompt}\nprepared`,
+						messages: [...context.messages, marker],
+						tools: [],
+					};
+				},
+				transformContext: (messages) => {
+					order.push(`transform-${hookContexts.length}`);
+					return messages.slice();
+				},
+				convertToLlm: (messages) => {
+					order.push(`convert-${hookContexts.length}`);
+					return identityConvert(messages);
+				},
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(order).toEqual([
+			"prepare-1",
+			"transform-1",
+			"convert-1",
+			"stream-1",
+			"prepare-2",
+			"transform-2",
+			"convert-2",
+			"stream-2",
+		]);
+		expect(hookMessageLengths).toEqual([1, 3]);
+		expect(hookContexts[0]).not.toBe(hookContexts[1]);
+		expect(hookContexts[0]?.messages).not.toBe(hookContexts[1]?.messages);
+		expect(hookContexts.map((context) => context.messages.length)).toEqual([1, 3]);
+		expect(liveContext.messages).toEqual([]);
+		expect(newMessages).not.toContain(marker);
+		expect(newMessages.filter((message) => message.role === "user")).toEqual([user("start")]);
+	});
+
+	it("prepares distinct snapshots at tool, steering, and follow-up boundaries", async () => {
+		const tool: AgentTool = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop",
+			parameters: z.object({}),
+			async execute() {
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+		const phases: string[] = [];
+		const snapshots: AgentContext[] = [];
+		let steeringPoll = 0;
+		let followUpPoll = 0;
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("noop", {}, { id: "noop-1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("post-tool"),
+				scriptedAssistantMessage("post-steering"),
+				scriptedAssistantMessage("post-follow-up"),
+			],
+		});
+
+		await runAgentLoop(
+			[user("start")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				prepareContext: (context) => {
+					snapshots.push(context);
+					const userMessages = context.messages.filter((message) => message.role === "user");
+					const lastUser = userMessages.at(-1);
+					phases.push(lastUser?.role === "user" && typeof lastUser.content === "string" ? lastUser.content : "");
+					return context;
+				},
+				getSteeringMessages: async () => {
+					steeringPoll++;
+					return steeringPoll === 3 ? [user("steering", 2)] : [];
+				},
+				getFollowUpMessages: async () => {
+					followUpPoll++;
+					return followUpPoll === 1 ? [user("follow-up", 3)] : [];
+				},
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(phases).toEqual(["start", "start", "steering", "follow-up"]);
+		expect(snapshots).toHaveLength(4);
+		expect(new Set(snapshots).size).toBe(4);
+		expect(new Set(snapshots.map((context) => context.messages)).size).toBe(4);
+		expect(snapshots.map((context) => context.messages.length)).toEqual([1, 3, 5, 7]);
+	});
+
 	it("filters non-LLM roles via convertToLlm", async () => {
 		const notification = {
 			role: "notification" as const,
