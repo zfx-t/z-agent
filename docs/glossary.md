@@ -82,6 +82,14 @@ Production uses Responses-backed `StreamFn`. Unit tests inject a private scripte
 
 Called after `turn_end` and before `shouldStopAfterTurn`. May replace context, model, or thinkingLevel for later provider calls in the same run. Does not write back to `Agent.state.thinkingLevel`. (ADR-0015)
 
+## prepareContext
+
+Generic pure hook called immediately before `transformContext`, `convertToLlm`,
+and the provider request. It receives a provider-context snapshot and may return
+a replacement context, but it must not perform filesystem, network, session, or
+tool effects. The CLI uses it to attach an already-built immutable skills
+snapshot; `@z-agent/agent` has no dependency on `@z-agent/skills`.
+
 ## shouldStopAfterTurn
 
 If true after a completed turn, emit `agent_end` and skip steering/follow-up polls (the loop-start steering poll still happens). (ADR-0015)
@@ -110,6 +118,10 @@ On-disk product directory name `.pillow` (user + project). Replaces `.z-agent` a
 
 Key in `~/.pillow/config.json` `models`. `--model` / `OPENAI_MODEL` resolve alias first, then raw `id`. (ADR-0022)
 
+## Model settings
+
+Live inspect/edit surface for the resolved catalog model: `contextWindow`, `maxTokens`, and `thinking`. `/model` updates the current Agent and skills budget. Alias-backed values write `~/.pillow/config.json`. Raw model ids stay session-only. (ADR-0022)
+
 ## Session tree
 
 Append-only JSONL nodes with `id`/`parentId` under `~/.pillow/sessions`. Product persistence, not L5. (ADR-0016, ADR-0022)
@@ -118,9 +130,61 @@ Append-only JSONL nodes with `id`/`parentId` under `~/.pillow/sessions`. Product
 
 When estimated tokens exceed `contextWindow - reserve`, or the last assistant `stopReason` is `length`, older leaf messages are summarized (via the existing `StreamFn`) and replaced by a summary plus a recent tail. (ADR-0016)
 
+## Discovered skill
+
+A valid `SKILL.md` metadata descriptor present in the current skills registry.
+Discovery does not make the skill active and does not eagerly load its body.
+
+## Active skill
+
+A skill the current session branch intends to use. Activation is branch-local
+and persistent, but does not imply that the body is present in every provider
+request.
+
+## Loaded skill
+
+A skill body or resource read for one provider request. Loaded is ephemeral and
+is not persisted as session state.
+
+## Stale / unavailable skill
+
+An active skill identity whose name, canonical path, and content hash cannot be
+reconciled with the current registry. It remains visible for audit but is not
+rendered to the provider or exposed through `skill_read` until reconciled.
+
+## Manual-off tombstone
+
+Session-local state written by explicit skill deactivation. It prevents the
+automatic matcher from immediately reactivating that skill; explicit activation
+clears the tombstone.
+
+## Skill control node
+
+A branch-aware `skill_activation`, `skill_deactivation`, or `skill_mode` JSONL
+session node. Control nodes determine effective skill state but never enter
+`Agent.state.messages` or the provider transcript.
+
+## Skill context mode
+
+`progressive` indexes metadata and loads bodies on demand, with an explicit
+invocation body included for that request. `full` injects complete active bodies
+when they fit the request budget. `index` renders metadata only. The mode is
+persisted with a skill control node and defaults to `progressive`.
+
+## Skill context snapshot
+
+Immutable request-local data containing the registry version, effective active
+state, matcher result, mode, budget decision, and any explicit invocation. A
+running provider request keeps its snapshot even if a reload or activation is
+queued.
+
 ## Skills / extensions / project trust
 
-`SKILL.md` files and extension modules are loaded from `~/.pillow` and `{cwd}/.pillow` after the cwd is trusted. Confirm UI still runs before extension `beforeToolCall`. `{cwd}/.agents` is not scanned. (ADR-0016, ADR-0022)
+Skills are local, non-executable, untrusted supplemental instructions discovered
+from `$PILLOW_HOME` and `{cwd}/.pillow` without project trust. Executable
+extensions remain trust-gated, and extension confirmation hooks still run.
+Project skills override user skills; `{cwd}/.agents` is not scanned. Skill
+`allowed-tools` metadata is advisory only. (ADR-0016, ADR-0022)
 
 ## Path jail
 

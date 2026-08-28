@@ -21,7 +21,8 @@ Responses stream; thinking SSE + signature replay (ADR-0017).
 - Tools in `@z-agent/agent` (read+images, write, edit, bash+Win tree, grep, ls, find, jail)
 - `@z-agent/tui` + confirm UI
 - Print (`-p` / `--yes`) and TUI
-- JSONL session tree, compaction, skills, extensions, project trust
+- JSONL session tree, compaction, initial skills/extensions loading, and project
+  trust for executable extensions
 - `@z-agent/harness` JSONL L5 (`--durable`)
 
 ## Phase 3 — L5 durable harness (done, JSONL)
@@ -31,3 +32,17 @@ SQLite backend TBD (separate ADR).
 ## Phase 2.6 — Pillow home + user config (done)
 
 `~/.pillow/config.json` model catalog (aliases, thinking, context). On-disk home renamed from `.z-agent`. (ADR-0022)
+
+## Phase 2.7 - Skills product (done)
+
+- Agent Skills-compatible frontmatter parsing and four-source local discovery
+- Confined manifest globs with deterministic project-over-user resolution
+- Progressive, full, and index context modes with bounded whole-entry rendering
+- Deterministic automatic matching plus explicit slash invocation
+- Branch-aware activation/deactivation/mode control nodes
+- Constrained `skill_read`, immutable provider snapshots, and TUI slash completion
+- Skills available without project trust; executable extensions remain trust-gated
+
+## Phase 2.8 — Model settings inspect and edit
+
+`/status` and `/model` show `contextWindow`, `maxTokens`, and `thinking`. Alias-backed edits persist to `~/.pillow/config.json`. `--context-window` / `--max-tokens` and matching env vars complete ADR-0022 numeric precedence.

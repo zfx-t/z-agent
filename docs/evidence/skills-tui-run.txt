@@ -1,0 +1,14 @@
+Observed 2026-08-28T19:23:16+08:00 with a fixed 80x24 pseudo-TTY, an isolated
+temporary cwd, and the same local mock OpenAI Responses SSE server.
+
+Journey:
+  1. Entered /de.
+  2. Completion popup displayed /demo.
+  3. Pressed Tab; token became /demo.
+  4. Typed "inspect this"; argument remained after the completed token.
+  5. Pressed Enter.
+
+Observed transcript:
+  YOU /demo inspect this
+  INFO [skill] demo activated for this request
+  AI mock ok

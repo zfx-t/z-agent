@@ -1,0 +1,14 @@
+Observed 2026-08-28T19:22:00+08:00 in an isolated temporary cwd with a local
+mock OpenAI Responses SSE server and a project .pillow/skills/demo/SKILL.md.
+
+Command:
+  node packages/cli/bin/z-agent.mjs --print --yes --cwd <isolated-cwd> "/demo inspect this"
+
+Observed stdout:
+  [skill] demo activated for this request
+  mock ok
+
+Observed session JSONL:
+  one skill_activation control node for demo
+  one assistant message containing mock ok
+  no skill body, invocation arguments, or rendered XML message

@@ -1,0 +1,27 @@
+{
+  "status": "verified",
+  "manifest": "/home/zeroth/ForMe/z-agent/docs/evidence/skills-product-evidence.json",
+  "executed_at": "2026-08-28T11:29:41.996367+00:00",
+  "automated_results": [
+    {
+      "name": "skills focused tests",
+      "scope": "supporting",
+      "command": "export PATH=/home/zeroth/.local/share/mise/installs/node/22.20.0/bin:$PATH; npx vitest --run packages/skills/test packages/agent/test packages/cli/test packages/tui/test",
+      "cwd": "/home/zeroth/ForMe/z-agent",
+      "exit_code": 0,
+      "output": "\n RUN  v3.2.4 /home/zeroth/ForMe/z-agent\n\n \u2713 |@z-agent/cli| test/extensions.test.ts (2 tests) 33ms\n \u2713 |@z-agent/cli| test/config.test.ts (5 tests) 11ms\n \u2713 |@z-agent/tui| test/tui.test.ts (29 tests) 103ms\n \u2713 |@z-agent/skills| test/state.test.ts (7 tests) 16ms\n \u2713 |@z-agent/skills| test/parse.test.ts (9 tests) 66ms\n \u2713 |@z-agent/skills| test/resource.test.ts (8 tests) 88ms\n \u2713 |@z-agent/cli| test/sessions.test.ts (2 tests) 17ms\n \u2713 |@z-agent/skills| test/discover.test.ts (7 tests) 158ms\n \u2713 |@z-agent/cli| test/skill-session.test.ts (3 tests) 16ms\n \u2713 |@z-agent/agent| test/agent.test.ts (34 tests) 89ms\n \u2713 |@z-agent/cli| test/skills.test.ts (1 test) 42ms\n \u2713 |@z-agent/agent| test/agent-loop.test.ts (42 tests) 179ms\n \u2713 |@z-agent/cli| test/args.test.ts (6 tests) 8ms\n \u2713 |@z-agent/agent| test/tools.test.ts (14 tests) 278ms\n \u2713 |@z-agent/cli| test/interactive.test.ts (2 tests) 12ms\n \u2713 |@z-agent/cli| test/trust.test.ts (2 tests) 14ms\n \u2713 |@z-agent/agent| test/types.test.ts (13 tests) 14ms\n \u2713 |@z-agent/skills| test/match.test.ts (6 tests) 23ms\n \u2713 |@z-agent/skills| test/render.test.ts (8 tests) 39ms\n \u2713 |@z-agent/cli| test/pillow-home.test.ts (2 tests) 25ms\n \u2713 |@z-agent/agent| test/tool-json-schema.test.ts (2 tests) 21ms\n \u2713 |@z-agent/cli| test/skill-manager.test.ts (8 tests) 247ms\n \u2713 |@z-agent/cli| test/skill-commands.test.ts (3 tests) 180ms\n \u2713 |@z-agent/cli| test/abort.test.ts (2 tests) 8ms\n \u2713 |@z-agent/cli| test/slash.test.ts (6 tests) 7ms\n \u2713 |@z-agent/cli| test/skills-provider-context.test.ts (2 tests) 116ms\n \u2713 |@z-agent/agent| test/emit.test.ts (6 tests) 12ms\n \u2713 |@z-agent/skills| test/resolve.test.ts (4 tests) 12ms\n \u2713 |@z-agent/cli| test/render.test.ts (3 tests) 14ms\n \u2713 |@z-agent/cli| test/confirm.test.ts (2 tests) 7ms\n \u2713 |@z-agent/cli| test/compaction.test.ts (4 tests) 9ms\n \u2713 |@z-agent/cli| test/system-prompt.test.ts (1 test) 9ms\n \u2713 |@z-agent/agent| test/smoke.test.ts (2 tests) 5ms\n \u2713 |@z-agent/skills| test/smoke.test.ts (1 test) 3ms\n \u2713 |@z-agent/cli| test/smoke.test.ts (5 tests) 2412ms\n   \u2713 @z-agent/cli smoke > exits 1 without OPENAI_API_KEY  546ms\n   \u2713 @z-agent/cli smoke > exits 2 on unknown flags  486ms\n   \u2713 @z-agent/cli smoke > exits 0 on --help  539ms\n   \u2713 @z-agent/cli smoke > lists configured models without requiring an API key  574ms\n\n Test Files  35 passed (35)\n      Tests  253 passed (253)\n   Start at  19:29:26\n   Duration  3.70s (transform 6.56s, setup 0ms, collect 18.88s, tests 4.29s, environment 21ms, prepare 8.66s)\n\n"
+    },
+    {
+      "name": "repository type and formatting check",
+      "scope": "supporting",
+      "command": "export PATH=/home/zeroth/.local/share/mise/installs/node/22.20.0/bin:$PATH; npm run check",
+      "cwd": "/home/zeroth/ForMe/z-agent",
+      "exit_code": 0,
+      "output": "\n> check\n> biome check --write --error-on-warnings . && tsc -p packages/ai/tsconfig.json --noEmit && tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/tui/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.json --noEmit && tsc -p packages/harness/tsconfig.json --noEmit && tsc -p packages/skills/tsconfig.json --noEmit\n\nChecked 111 files in 123ms. No fixes applied.\n"
+    }
+  ],
+  "manual_results": [
+    "manual PASS: print skill invocation journey (1 artifact(s))",
+    "manual PASS: TUI completion and invocation journey (1 artifact(s))"
+  ]
+}

@@ -13,7 +13,25 @@ The coding product currently stores user state under `~/.z-agent` and project st
 - **On-disk identity is `.pillow` everywhere** (user + project). Old `.z-agent` is not a long-lived dual home.
 - **Product identity stays Z Agent:** bin `z-agent`, npm scope `@z-agent/*`. `.pillow` is the directory name only.
 - **One-shot migrate:** if the target `.pillow` is missing and `.z-agent` exists, copy (do not delete) then read/write only `.pillow`. Same rule for `~` and `{cwd}`.
-- **Drop `{cwd}/.agents`.** Project skills/extensions only from `{cwd}/.pillow/{skills,extensions}`.
+- **Drop `{cwd}/.agents`.** Project-scoped resources live only under
+  `{cwd}/.pillow`; conventional skills and extensions use the `skills` and
+  `extensions` directories, and the skills manifest is `.pillow/skills.json`.
+- **Skills sources:** discover skills from `$PILLOW_HOME/skills`,
+  `{cwd}/.pillow/skills`, `$PILLOW_HOME/skills.json`, and
+  `{cwd}/.pillow/skills.json`. Resolution precedence is project manifest,
+  project conventional directory, user manifest, then user conventional
+  directory. Name collisions remain diagnostic instead of being silently
+  discarded.
+- **Manifest confinement:** every manifest entry is relative to the manifest
+  directory. Absolute paths and lexical `..` escapes are rejected, and the
+  canonical target of every path or glob match must remain inside that
+  directory after symlink resolution.
+- **Trust is split by effect:** local user and project skills may be discovered
+  and activated without project trust because they are treated as untrusted
+  supplemental instructions. Executable extensions remain behind the project
+  trust gate. Skill metadata, including `allowed-tools`, cannot authorize a
+  tool, bypass confirmation, or widen the path jail. This supersedes the
+  bundled `skills/extensions + project trust` shorthand in ADR-0016.
 - **Config is user-only:** `~/.pillow/config.json`. Project `.pillow` does not carry a config file. `PILLOW_HOME` overrides the user directory (tests / ops).
 - **Precedence (when a model actually resolves):** CLI flag > environment variable > `config.json` > built-in default for *non-model* fields (`baseUrl`, `apiKey`, `contextWindow`, `maxTokens`).
 - **Secrets:** `apiKey` is optional in the file. `0600` on write. Never log or render the value. Env/flag still win.
@@ -30,6 +48,9 @@ The coding product currently stores user state under `~/.z-agent` and project st
 - CLI and package names do not change (ADR-0007 stands).
 - First launch after this ADR may copy `.z-agent` → `.pillow`; leftover `.z-agent` is backup only.
 - `{cwd}/.agents` is no longer a search path.
+- Skills and executable extensions no longer share one trust decision. Skills
+  use confined local discovery and the normal provider/tool policy boundaries;
+  extensions keep the existing executable-resource trust check.
 - Docs and tests that hard-code `.z-agent` must follow the final path set.
 - Smoke tests that only set `OPENAI_API_KEY` still work: starter config supplies a model.
 

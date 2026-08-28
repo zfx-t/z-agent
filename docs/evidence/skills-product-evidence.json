@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "outcome": {
+    "user": "Z Agent operator",
+    "observable_success": "Local skills can be discovered, explicitly invoked through print and TUI surfaces, injected for a provider request, and persisted as session control state.",
+    "surface": "integration",
+    "entrypoint": "packages/cli/bin/z-agent.mjs",
+    "primary_journey": [
+      "Launch print mode against an isolated project skill and submit /demo with arguments",
+      "Observe skill activation and provider response",
+      "Inspect the saved session and confirm activation control without skill XML transcript content",
+      "Launch the interactive TUI in an 80x24 pseudo-TTY",
+      "Type /de, accept /demo with Tab, preserve arguments, and submit"
+    ]
+  },
+  "verified_at": "2026-08-28T19:23:16+08:00",
+  "environment": "Linux workspace, Node.js 22.20.0, isolated temporary fixtures, local mock OpenAI Responses SSE server, fixed 80x24 pseudo-TTY",
+  "automated_checks": [
+    {
+      "name": "skills focused tests",
+      "scope": "supporting",
+      "command": "export PATH=/home/zeroth/.local/share/mise/installs/node/22.20.0/bin:$PATH; npx vitest --run packages/skills/test packages/agent/test packages/cli/test packages/tui/test",
+      "cwd": "../..",
+      "timeout_seconds": 300,
+      "output_contains": "253 passed"
+    },
+    {
+      "name": "repository type and formatting check",
+      "scope": "supporting",
+      "command": "export PATH=/home/zeroth/.local/share/mise/installs/node/22.20.0/bin:$PATH; npm run check",
+      "cwd": "../..",
+      "timeout_seconds": 300,
+      "output_contains": "Checked"
+    }
+  ],
+  "manual_checks": [
+    {
+      "name": "print skill invocation journey",
+      "scope": "primary_journey",
+      "result": "passed",
+      "observed_at": "2026-08-28T19:22:00+08:00",
+      "limitation": "The provider was a local mock SSE server because no external model credential was used.",
+      "artifacts": ["skills-print-run.txt"]
+    },
+    {
+      "name": "TUI completion and invocation journey",
+      "scope": "primary_journey",
+      "result": "passed",
+      "observed_at": "2026-08-28T19:23:16+08:00",
+      "limitation": "The interaction was driven through a pseudo-TTY rather than a human terminal, using a local mock SSE provider.",
+      "artifacts": ["skills-tui-run.txt"]
+    }
+  ],
+  "blockers": [],
+  "residual_risks": [
+    "Windows-specific terminal behavior and packaging were not exercised.",
+    "External provider compatibility beyond the OpenAI Responses adapter was not exercised."
+  ],
+  "latest_user_report": "none"
+}
