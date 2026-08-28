@@ -21,6 +21,20 @@ export class EditorBuffer {
 		this.placeholders.push({ start: this.cursor, end: this.cursor, label });
 	}
 
+	/** Replace a source range while preserving a cursor positioned outside it. */
+	replaceRange(start: number, end: number, inserted: string): void {
+		if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > this.text.length) {
+			throw new RangeError(`Invalid editor range [${start}, ${end})`);
+		}
+		const previousCursor = this.cursor;
+		this.replace(start, end, inserted);
+		if (previousCursor < start) {
+			this.cursor = previousCursor;
+		} else if (previousCursor > end) {
+			this.cursor = previousCursor + inserted.length - (end - start);
+		}
+	}
+
 	backspace(): void {
 		if (this.cursor === 0) {
 			return;
@@ -102,6 +116,10 @@ export class EditorBuffer {
 
 	get value(): string {
 		return this.text;
+	}
+
+	get cursorOffset(): number {
+		return this.cursor;
 	}
 
 	get isMultiline(): boolean {

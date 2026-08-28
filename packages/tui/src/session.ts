@@ -1,9 +1,13 @@
+import { DEFAULT_COMPLETION_ROWS, rankSlashCompletions, slashCompletionToken } from "./completion.ts";
 import type { ConfirmChoice, ConfirmRequest } from "./confirm.ts";
 import { confirmChoiceFromKey, formatConfirmPrompt } from "./confirm.ts";
 import { EditorBuffer } from "./editor.ts";
 import { type Key, parseInputChunk } from "./keys.ts";
-import { renderFrame } from "./layout.ts";
+import type { TuiFrameState } from "./layout.ts";
+import { renderFrame, transcriptViewportFor } from "./layout.ts";
 import type {
+	TuiCompletionCandidate,
+	TuiCompletionState,
 	TuiFocus,
 	TuiHeaderState,
 	TuiInspectorState,
@@ -28,6 +32,10 @@ export interface InteractiveTuiOptions {
 	onSubmitDuringRun?: (value: string) => void;
 	/** Ctrl+C while streaming (raw mode swallows SIGINT). */
 	onInterrupt?: () => void;
+	/** Supplies current built-in and skill slash candidates without invoking them. */
+	completionCandidates?: () => readonly TuiCompletionCandidate[];
+	/** Maximum visible completion rows. Defaults to 6. */
+	completionRows?: number;
 }
 
 export interface PickListOptions {
@@ -50,6 +58,8 @@ export class InteractiveTui {
 	private readonly statusFn: () => string;
 	private readonly headerFn?: () => TuiHeaderState;
 	private readonly onSubmitDuringRun?: (value: string) => void;
+	private readonly completionCandidates?: () => readonly TuiCompletionCandidate[];
+	private readonly completionRows: number;
 	private readonly fixedColumns?: number;
 	private readonly fixedRows?: number;
 	private readonly colors: boolean;
@@ -61,6 +71,8 @@ export class InteractiveTui {
 	private inspectorScrollOffset = 0;
 	private followingLatest = true;
 	private unseenEventCount = 0;
+	/** First visible transcript row while scrolled back; undefined = follow latest. */
+	private transcriptScrollOffset: number | undefined;
 	private confirm: { request: ConfirmRequest; resolve: (choice: ConfirmChoice) => void } | undefined;
 	private picker:
 		| {
@@ -75,6 +87,8 @@ export class InteractiveTui {
 		| undefined;
 	private promptResolve: ((line: string | null) => void) | undefined;
 	private readonly pendingPrompts: string[] = [];
+	private completion: TuiCompletionState | undefined;
+	private completionAccepted = false;
 	private historyIndex: number | undefined;
 	private historyDraft = "";
 	private closed = false;
@@ -95,6 +109,8 @@ export class InteractiveTui {
 		this.statusFn = options.status ?? (() => "z-agent");
 		this.headerFn = options.header;
 		this.onSubmitDuringRun = options.onSubmitDuringRun;
+		this.completionCandidates = options.completionCandidates;
+		this.completionRows = completionRowCount(options.completionRows);
 		this.fixedColumns = options.columns;
 		this.fixedRows = options.rows;
 		this.colors = options.colors ?? (this.stdout.isTTY === true && process.env.NO_COLOR === undefined);
@@ -178,6 +194,9 @@ export class InteractiveTui {
 	clearTranscript(): void {
 		this.transcript.length = 0;
 		this.toolStartedAt.clear();
+		this.transcriptScrollOffset = undefined;
+		this.followingLatest = true;
+		this.unseenEventCount = 0;
 		this.repaint();
 	}
 
@@ -253,6 +272,7 @@ export class InteractiveTui {
 	pasteText(text: string): void {
 		this.resetHistoryNavigation();
 		this.editor.insertPastedText(text, `[Pasted text - ${formatBytes(text.length)}]`);
+		this.updateCompletion();
 		this.repaint();
 	}
 
@@ -264,6 +284,7 @@ export class InteractiveTui {
 
 	confirmTool(toolName: string, args: unknown): Promise<ConfirmChoice> {
 		return new Promise((resolve) => {
+			this.cancelCompletion();
 			this.confirm = { request: { toolName, args }, resolve };
 			this.repaint();
 		});
@@ -271,6 +292,7 @@ export class InteractiveTui {
 
 	pickFromList(title: string, items: string[], options: PickListOptions = {}): Promise<number> {
 		return new Promise((resolve) => {
+			this.cancelCompletion();
 			this.picker = {
 				title,
 				items,
@@ -299,6 +321,12 @@ export class InteractiveTui {
 	/** Test helper: feed a parsed key. */
 	pushKey(key: Key): void {
 		this.dispatch(key);
+	}
+
+	/** Re-read candidates after an external registry refresh. */
+	refreshCompletions(): void {
+		this.updateCompletion();
+		this.repaint();
 	}
 
 	private handleInput(raw: string): void {
@@ -369,6 +397,10 @@ export class InteractiveTui {
 			}
 			return;
 		}
+		if (this.focus === "editor" && this.dispatchCompletionKey(key)) {
+			this.repaint();
+			return;
+		}
 		if (key.type === "tab") {
 			this.toggleFocus();
 			this.repaint();
@@ -385,52 +417,67 @@ export class InteractiveTui {
 			this.repaint();
 			return;
 		}
+		let refreshCompletion = false;
 		if (key.type === "paste") {
 			this.resetHistoryNavigation();
 			this.editor.insertPastedText(key.value, `[Pasted text - ${formatBytes(key.value.length)}]`);
+			refreshCompletion = true;
 		} else if (key.type === "char") {
 			this.resetHistoryNavigation();
 			this.editor.insert(key.value);
+			refreshCompletion = true;
 		} else if (key.type === "backspace") {
 			this.resetHistoryNavigation();
 			this.editor.backspace();
+			refreshCompletion = true;
 		} else if (key.type === "delete") {
 			this.resetHistoryNavigation();
 			this.editor.delete();
+			refreshCompletion = true;
 		} else if (key.type === "left") {
 			this.editor.moveLeft();
+			refreshCompletion = true;
 		} else if (key.type === "right") {
 			this.editor.moveRight();
+			refreshCompletion = true;
 		} else if (key.type === "home" || (key.type === "ctrl" && key.value === "a")) {
 			this.editor.moveHome();
+			refreshCompletion = true;
 		} else if (key.type === "end" || (key.type === "ctrl" && key.value === "e")) {
 			this.editor.moveEnd();
+			refreshCompletion = true;
 		} else if (key.type === "newline") {
 			this.resetHistoryNavigation();
 			this.editor.insert("\n");
+			refreshCompletion = true;
 		} else if (key.type === "up") {
 			if (this.editor.isMultiline) {
 				this.editor.moveUp();
 			} else {
 				this.recallPreviousPrompt();
 			}
+			refreshCompletion = true;
 		} else if (key.type === "down") {
 			if (this.editor.isMultiline) {
 				this.editor.moveDown();
 			} else {
 				this.recallNextPrompt();
 			}
+			refreshCompletion = true;
 		} else if (key.type === "ctrl" && key.value === "u") {
 			this.resetHistoryNavigation();
 			this.editor.clear();
+			refreshCompletion = true;
 		} else if (key.type === "ctrl" && key.value === "w") {
 			this.resetHistoryNavigation();
 			this.editor.deleteWordBackward();
+			refreshCompletion = true;
 		} else if (key.type === "enter") {
 			if (this.streaming && !this.onSubmitDuringRun) {
 				this.repaint();
 				return;
 			}
+			this.cancelCompletion();
 			const value = this.editor.submit().trim();
 			if (value.length === 0) {
 				this.repaint();
@@ -438,6 +485,7 @@ export class InteractiveTui {
 			}
 			this.rememberPrompt(value);
 			this.appendUser(value);
+			this.followTranscriptLatest();
 			if (this.streaming) {
 				this.onSubmitDuringRun?.(value);
 			} else {
@@ -450,20 +498,71 @@ export class InteractiveTui {
 				}
 			}
 		}
+		if (refreshCompletion) {
+			this.updateCompletion();
+		}
 		this.repaint();
 	}
 
+	private dispatchCompletionKey(key: Key): boolean {
+		if (!this.completion) {
+			return false;
+		}
+		if (key.type === "escape") {
+			this.cancelCompletion();
+			return true;
+		}
+		if (key.type !== "tab" && key.type !== "shiftTab") {
+			return false;
+		}
+		let index = this.completion.index;
+		if (this.completionAccepted || key.type === "shiftTab") {
+			const direction = key.type === "shiftTab" ? -1 : 1;
+			index = (index + direction + this.completion.items.length) % this.completion.items.length;
+		}
+		const candidate = this.completion.items[index];
+		if (!candidate) {
+			this.cancelCompletion();
+			return true;
+		}
+		this.resetHistoryNavigation();
+		this.editor.replaceRange(this.completion.tokenStart, this.completion.tokenEnd, candidate.token);
+		this.completion = {
+			...this.completion,
+			index,
+			tokenEnd: this.completion.tokenStart + candidate.token.length,
+		};
+		this.completionAccepted = true;
+		return true;
+	}
+
+	private updateCompletion(): void {
+		this.completionAccepted = false;
+		const range = slashCompletionToken(this.editor.value, this.editor.cursorOffset);
+		if (!range || !this.completionCandidates || this.focus !== "editor") {
+			this.completion = undefined;
+			return;
+		}
+		const candidates = this.completionCandidates();
+		const items = rankSlashCompletions(candidates, range.query, candidates.length);
+		this.completion =
+			items.length === 0 ? undefined : { items, index: 0, tokenStart: range.start, tokenEnd: range.end };
+	}
+
+	private cancelCompletion(): void {
+		this.completion = undefined;
+		this.completionAccepted = false;
+	}
+
 	private toggleFocus(): void {
+		this.cancelCompletion();
 		if (this.focus === "transcript") {
 			this.focus = "editor";
 			return;
 		}
-		const latest = this.toolEntries().at(-1)?.tool?.toolCallId;
-		if (latest === undefined) {
-			return;
-		}
 		this.focus = "transcript";
-		this.selectedToolCallId = latest;
+		this.selectedToolCallId = this.toolEntries().at(-1)?.tool?.toolCallId;
+		this.transcriptScrollOffset = undefined;
 		this.followingLatest = true;
 		this.unseenEventCount = 0;
 	}
@@ -475,9 +574,17 @@ export class InteractiveTui {
 			return;
 		}
 		if (key.type === "up") {
-			this.moveToolSelection(-1);
+			if (this.toolEntries().length > 0) {
+				this.moveToolSelection(-1);
+			} else {
+				this.scrollTranscript(-1);
+			}
 		} else if (key.type === "down") {
-			this.moveToolSelection(1);
+			if (this.toolEntries().length > 0) {
+				this.moveToolSelection(1);
+			} else {
+				this.scrollTranscript(1);
+			}
 		} else if (key.type === "enter") {
 			this.toggleInspector();
 		} else if (key.type === "left") {
@@ -485,20 +592,28 @@ export class InteractiveTui {
 		} else if (key.type === "right") {
 			this.moveInspectorView(1);
 		} else if (key.type === "pageUp") {
-			this.moveInspectorScroll(-6);
+			if (this.activeInspector()) {
+				this.moveInspectorScroll(-6);
+			} else {
+				this.scrollTranscript(-this.scrollPage());
+			}
 		} else if (key.type === "pageDown") {
-			this.moveInspectorScroll(6);
+			if (this.activeInspector()) {
+				this.moveInspectorScroll(6);
+			} else {
+				this.scrollTranscript(this.scrollPage());
+			}
 		} else if (key.type === "home") {
 			if (this.activeInspector()) {
 				this.inspectorScrollOffset = 0;
 			} else {
-				this.selectBoundaryTool("start");
+				this.scrollTranscriptToTop();
 			}
 		} else if (key.type === "end") {
 			if (this.activeInspector()) {
 				this.inspectorScrollOffset = this.inspectorMaxScroll();
 			} else {
-				this.selectBoundaryTool("end");
+				this.followTranscriptLatest();
 			}
 		}
 		this.repaint();
@@ -518,6 +633,7 @@ export class InteractiveTui {
 		const current = entries.findIndex((entry) => entry.tool?.toolCallId === this.selectedToolCallId);
 		const next = current < 0 ? entries.length - 1 : Math.max(0, Math.min(entries.length - 1, current + direction));
 		this.selectedToolCallId = entries[next]?.tool?.toolCallId;
+		this.transcriptScrollOffset = undefined;
 		const isLatest = next === entries.length - 1;
 		this.followingLatest = isLatest;
 		if (isLatest) {
@@ -525,17 +641,34 @@ export class InteractiveTui {
 		}
 	}
 
-	private selectBoundaryTool(boundary: "start" | "end"): void {
-		const entries = this.toolEntries();
-		if (entries.length === 0) {
-			return;
+	private scrollTranscript(delta: number): void {
+		const { maxScroll, start } = transcriptViewportFor(this.frameState(), this.columns(), this.rows());
+		const current = this.transcriptScrollOffset ?? start;
+		const next = Math.max(0, Math.min(maxScroll, current + delta));
+		if (next >= maxScroll) {
+			this.followTranscriptLatest();
+		} else {
+			this.transcriptScrollOffset = next;
+			this.followingLatest = false;
+			this.selectedToolCallId = undefined;
 		}
-		const index = boundary === "start" ? 0 : entries.length - 1;
-		this.selectedToolCallId = entries[index]?.tool?.toolCallId;
-		this.followingLatest = boundary === "end";
-		if (this.followingLatest) {
-			this.unseenEventCount = 0;
-		}
+	}
+
+	private scrollTranscriptToTop(): void {
+		this.transcriptScrollOffset = 0;
+		this.followingLatest = false;
+		this.selectedToolCallId = undefined;
+	}
+
+	private followTranscriptLatest(): void {
+		this.transcriptScrollOffset = undefined;
+		this.followingLatest = true;
+		this.unseenEventCount = 0;
+	}
+
+	private scrollPage(): number {
+		const { bodyHeight } = transcriptViewportFor(this.frameState(), this.columns(), this.rows());
+		return Math.max(1, bodyHeight - 3);
 	}
 
 	private toggleInspector(): void {
@@ -676,33 +809,36 @@ export class InteractiveTui {
 	}
 
 	private repaint(): void {
-		const lines = renderFrame(
-			{
-				status: this.statusFn(),
-				header: this.headerFn?.(),
-				transcript: this.transcript,
-				editorLines: this.editor.displayLines(),
-				confirm: this.confirm ? formatConfirmPrompt(this.confirm.request) : undefined,
-				picker: this.picker
-					? {
-							title: this.picker.title,
-							items: this.picker.matches.map((index) => this.picker?.items[index] ?? ""),
-							index: this.picker.index,
-							query: this.picker.query,
-						}
-					: undefined,
-				inspector: this.activeInspector(),
-				focus: this.focus,
-				selectedToolCallId: this.selectedToolCallId,
-				followLatest: this.followingLatest,
-				unseenEventCount: this.unseenEventCount,
-				streaming: this.streaming,
-				colors: this.colors,
-			},
-			this.columns(),
-			this.rows(),
-		);
+		const lines = renderFrame(this.frameState(), this.columns(), this.rows());
 		this.screen.paint(lines);
+	}
+
+	private frameState(): TuiFrameState {
+		return {
+			status: this.statusFn(),
+			header: this.headerFn?.(),
+			transcript: this.transcript,
+			editorLines: this.editor.displayLines(),
+			confirm: this.confirm ? formatConfirmPrompt(this.confirm.request) : undefined,
+			picker: this.picker
+				? {
+						title: this.picker.title,
+						items: this.picker.matches.map((index) => this.picker?.items[index] ?? ""),
+						index: this.picker.index,
+						query: this.picker.query,
+					}
+				: undefined,
+			completion: this.completion,
+			completionRows: this.completionRows,
+			inspector: this.activeInspector(),
+			focus: this.focus,
+			selectedToolCallId: this.selectedToolCallId,
+			followLatest: this.followingLatest,
+			unseenEventCount: this.unseenEventCount,
+			streaming: this.streaming,
+			colors: this.colors,
+			transcriptScrollOffset: this.transcriptScrollOffset,
+		};
 	}
 
 	private activeInspector(): TuiInspectorState | undefined {
@@ -717,6 +853,13 @@ export class InteractiveTui {
 		}
 		return undefined;
 	}
+}
+
+function completionRowCount(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) {
+		return DEFAULT_COMPLETION_ROWS;
+	}
+	return Math.max(1, Math.trunc(value));
 }
 
 function compactJson(value: unknown, maxChars: number): string {

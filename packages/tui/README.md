@@ -8,8 +8,22 @@ active during a run. Bracketed pasted text and image attachments render as
 compact placeholders instead of expanding copied content in the editor.
 
 Keys: `Enter` sends, `Shift+Enter` inserts a newline, `Ctrl+C` interrupts an
-active run, and `Ctrl+T` toggles the latest thinking entry. `Tab` moves between
-the editor and transcript; transcript focus uses `Up`/`Down` to select tools,
-`Enter` to expand details, `Left`/`Right` to change available views, and `Esc`
-to return to the editor. The session and command pickers remain keyboard-only.
-Tool details stay in the single-column transcript at every supported width.
+active run, and `Ctrl+T` toggles the latest thinking entry. Outside slash
+completion, `Tab` moves between the editor and transcript; transcript focus
+uses `Up`/`Down` to select tools, `Enter` to expand details, `Left`/`Right` to
+change available views, and `Esc` to return to the editor. The session and
+command pickers remain keyboard-only. Tool details stay in the single-column
+transcript at every supported width.
+
+When the editor's first token starts with `/`, a fixed-height popup combines
+built-in commands and skill names. Candidates rank by exact, case-insensitive
+prefix, substring, then ordered fuzzy character match. `Tab` accepts the best
+candidate and cycles forward on repeated presses, `Shift+Tab` cycles backward,
+and `Esc` cancels. Only the command token is replaced, so arguments and
+cursor-relative text stay intact. Selecting a candidate never activates a skill
+or calls the model.
+
+Slash commands submitted during a provider run remain pending in FIFO order and
+are processed at safe turn boundaries. The running request keeps its original
+immutable context snapshot; a queued `/reload` applies before later queued skill
+commands.

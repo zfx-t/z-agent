@@ -8,6 +8,20 @@ export interface TuiHeaderState {
 	cwd: string;
 	model: string;
 	session: string;
+	context?: string;
+}
+
+export interface TuiCompletionCandidate {
+	token: string;
+	description: string;
+	kind: "command" | "skill";
+}
+
+export interface TuiCompletionState {
+	items: readonly TuiCompletionCandidate[];
+	index: number;
+	tokenStart: number;
+	tokenEnd: number;
 }
 
 export type TuiTranscriptKind = "user" | "assistant" | "thinking" | "tool" | "info" | "warning" | "error";

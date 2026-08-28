@@ -2,6 +2,7 @@ export type Key =
 	| { type: "char"; value: string }
 	| { type: "paste"; value: string }
 	| { type: "tab" }
+	| { type: "shiftTab" }
 	| { type: "enter" }
 	| { type: "backspace" }
 	| { type: "delete" }
@@ -25,6 +26,7 @@ const ESCAPE_SEQUENCES = [
 	"\x1b[3~",
 	"\x1b[5~",
 	"\x1b[6~",
+	"\x1b[Z",
 	"\x1b[A",
 	"\x1b[B",
 	"\x1b[C",
@@ -49,6 +51,9 @@ export function parseKey(input: string): Key | undefined {
 	}
 	if (input === "\t") {
 		return { type: "tab" };
+	}
+	if (input === "\x1b[Z") {
+		return { type: "shiftTab" };
 	}
 	if (input === "\x1b\r" || input === "\x1b\n" || input === "\x1b[13;2u" || input === "\x1b[27;2;13~") {
 		return { type: "newline" };

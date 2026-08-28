@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { rankSlashCompletions, slashCompletionToken } from "../src/completion.ts";
 import { confirmChoiceFromKey, formatConfirmPrompt } from "../src/confirm.ts";
 import { EditorBuffer } from "../src/editor.ts";
 import { parseInputChunk, parseKey } from "../src/keys.ts";
@@ -9,6 +10,7 @@ describe("keys + editor + confirm", () => {
 	it("parses enter, editing keys, and alternate-enter", () => {
 		expect(parseKey("\r")).toEqual({ type: "enter" });
 		expect(parseKey("\t")).toEqual({ type: "tab" });
+		expect(parseKey("\x1b[Z")).toEqual({ type: "shiftTab" });
 		expect(parseKey("\x1b\r")).toEqual({ type: "newline" });
 		expect(parseKey("\x7f")).toEqual({ type: "backspace" });
 		expect(parseKey("\x1b[3~")).toEqual({ type: "delete" });
@@ -27,6 +29,7 @@ describe("keys + editor + confirm", () => {
 			remainder: "",
 		});
 		expect(parseInputChunk("\x1b[200~partial")).toEqual({ keys: [], remainder: "\x1b[200~partial" });
+		expect(parseInputChunk("\x1b[")).toEqual({ keys: [], remainder: "\x1b[" });
 	});
 
 	it("edits around the cursor and submits", () => {
@@ -48,6 +51,14 @@ describe("keys + editor + confirm", () => {
 		expect(editor.value).toBe("");
 	});
 
+	it("replaces a range without moving arguments or their relative cursor", () => {
+		const editor = new EditorBuffer();
+		editor.set("/ski arg text");
+		editor.replaceRange(0, 4, "/skill");
+		expect(editor.value).toBe("/skill arg text");
+		expect(editor.cursorOffset).toBe(editor.value.length);
+	});
+
 	it("hides pasted content behind text and image placeholders", () => {
 		const editor = new EditorBuffer();
 		editor.insert("Describe ");
@@ -64,6 +75,38 @@ describe("keys + editor + confirm", () => {
 		expect(confirmChoiceFromKey({ type: "char", value: "a" })).toBe("always");
 		expect(confirmChoiceFromKey({ type: "char", value: "n" })).toBe("deny");
 		expect(formatConfirmPrompt({ toolName: "bash", args: { command: "ls" } })).toContain("bash");
+	});
+});
+
+describe("slash completion ranking", () => {
+	it("only exposes a single-line first token at the cursor", () => {
+		expect(slashCompletionToken("/ski arg", 4)).toEqual({ query: "/ski", start: 0, end: 4 });
+		expect(slashCompletionToken("/ski arg", 5)).toEqual({ query: "/ski", start: 0, end: 4 });
+		expect(slashCompletionToken("/ski\nmore", 4)).toBeUndefined();
+	});
+
+	it("orders exact, prefix, substring, and fuzzy matches", () => {
+		const candidates = [
+			{ token: "/reload", description: "fuzzy", kind: "command" as const },
+			{ token: "x/rl", description: "substring", kind: "command" as const },
+			{ token: "/rload", description: "prefix", kind: "command" as const },
+			{ token: "/rl", description: "exact", kind: "skill" as const },
+		];
+		expect(rankSlashCompletions(candidates, "/rl").map((item) => item.description)).toEqual([
+			"exact",
+			"prefix",
+			"substring",
+			"fuzzy",
+		]);
+	});
+
+	it("uses command kind and token name as stable ties and enforces the row limit", () => {
+		const candidates = [
+			{ token: "/saga", description: "skill", kind: "skill" as const },
+			{ token: "/status", description: "command", kind: "command" as const },
+			{ token: "/sessions", description: "command", kind: "command" as const },
+		];
+		expect(rankSlashCompletions(candidates, "/s", 2).map((item) => item.token)).toEqual(["/sessions", "/status"]);
 	});
 });
 
@@ -170,6 +213,30 @@ describe("renderFrame", () => {
 		}
 	});
 
+	it("shows compact context in the header when provided", () => {
+		const frame = renderFrame(
+			{
+				status: "model=fast",
+				header: {
+					cwd: "/tmp/project",
+					model: "fast(gpt-4.1-mini)",
+					context: "128k",
+					session: "branch-a",
+				},
+				transcript: [],
+				editorLines: [""],
+				streaming: false,
+				colors: false,
+			},
+			120,
+			12,
+		).map(stripAnsi);
+		const header = frame[0] ?? "";
+		expect(header).toContain("model: fast(gpt-4.1-mini)");
+		expect(header).toContain("ctx: 128k");
+		expect(header).toContain("session: branch-a");
+	});
+
 	it("keeps shortcut hints complete at common terminal widths", () => {
 		const frame = renderFrame(
 			{
@@ -255,6 +322,106 @@ describe("renderFrame", () => {
 		).join("\n");
 		expect(frame).toContain(">TOOL read");
 		expect(frame).toContain("2 new events");
+	});
+
+	it("reveals earlier messages when a transcript scroll offset is set", () => {
+		const transcript = Array.from({ length: 40 }, (_, index) => ({
+			id: `entry-${index}`,
+			kind: "info" as const,
+			text: `message ${index}`,
+		}));
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript,
+				editorLines: ["|"],
+				streaming: false,
+				colors: false,
+				focus: "transcript",
+				transcriptScrollOffset: 0,
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain("message 0");
+		expect(frame).not.toContain("message 39");
+	});
+
+	it("anchors to the latest content without a scroll offset", () => {
+		const transcript = Array.from({ length: 40 }, (_, index) => ({
+			id: `entry-${index}`,
+			kind: "info" as const,
+			text: `message ${index}`,
+		}));
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript,
+				editorLines: ["|"],
+				streaming: false,
+				colors: false,
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).not.toContain("message 0");
+		expect(frame).toContain("message 39");
+	});
+
+	it("renders a sanitized completion popup with at most six rows", () => {
+		const items = Array.from({ length: 9 }, (_, index) => ({
+			token: `/command-${index}`,
+			description: index === 0 ? "unsafe\x1b[2J\nnext" : `description ${index}`,
+			kind: "command" as const,
+		}));
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [],
+				editorLines: ["/command|"],
+				completion: { items, index: 0, tokenStart: 0, tokenEnd: 8 },
+				streaming: false,
+				colors: false,
+			},
+			80,
+			24,
+		);
+		const popupRows = frame.filter((line) => line.includes("[command]"));
+		expect(frame).toHaveLength(24);
+		expect(popupRows).toHaveLength(6);
+		expect(frame.join("\n")).toContain("> /command-0");
+		expect(frame.join("\n")).not.toContain("\x1b");
+		for (const line of frame) {
+			expect(line.length).toBeLessThanOrEqual(80);
+		}
+		const compactFrame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [],
+				editorLines: ["/command|"],
+				completion: { items, index: 0, tokenStart: 0, tokenEnd: 8 },
+				streaming: false,
+				colors: false,
+			},
+			80,
+			10,
+		);
+		expect(compactFrame).toHaveLength(10);
+		expect(compactFrame.filter((line) => line.includes("[command]"))).toHaveLength(2);
+		const cycledFrame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [],
+				editorLines: ["/command-8|"],
+				completion: { items, index: 8, tokenStart: 0, tokenEnd: 10 },
+				streaming: false,
+				colors: false,
+			},
+			80,
+			24,
+		).join("\n");
+		expect(cycledFrame).toContain("> /command-8");
+		expect(cycledFrame).not.toContain("/command-0");
 	});
 });
 
@@ -415,6 +582,117 @@ describe("InteractiveTui", () => {
 		tui.pushKey({ type: "char", value: "next prompt" });
 		tui.pushKey({ type: "enter" });
 		await expect(tui.readPrompt()).resolves.toBe("next prompt");
+		tui.close();
+	});
+
+	it("accepts and cycles slash completions without changing arguments", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({
+			stdin,
+			stdout,
+			completionCandidates: () => [
+				{ token: "/skill", description: "Invoke a skill", kind: "command" },
+				{ token: "/skills", description: "List skills", kind: "command" },
+			],
+		});
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "/ski arg text" });
+		tui.pushKey({ type: "tab" });
+		tui.pushKey({ type: "tab" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("/skills arg text");
+		tui.close();
+	});
+
+	it("cycles through candidates beyond the visible popup rows", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({
+			stdin,
+			stdout,
+			completionRows: 2,
+			completionCandidates: () =>
+				Array.from({ length: 8 }, (_, index) => ({
+					token: `/command-${index}`,
+					description: `Command ${index}`,
+					kind: "command" as const,
+				})),
+		});
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "/command- keep" });
+		for (let index = 0; index < 8; index += 1) {
+			tui.pushKey({ type: "tab" });
+		}
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("/command-7 keep");
+		tui.close();
+	});
+
+	it("cycles slash completions backward and lets escape cancel", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const candidates = () => [
+			{ token: "/skill", description: "Invoke a skill", kind: "command" as const },
+			{ token: "/skills", description: "List skills", kind: "command" as const },
+		];
+		const reverseTui = new InteractiveTui({ stdin, stdout, completionCandidates: candidates });
+		const reversePrompt = reverseTui.readPrompt();
+		reverseTui.pushKey({ type: "char", value: "/ski keep" });
+		reverseTui.pushKey({ type: "shiftTab" });
+		reverseTui.pushKey({ type: "enter" });
+		await expect(reversePrompt).resolves.toBe("/skills keep");
+		reverseTui.close();
+
+		const cancelTui = new InteractiveTui({ stdin, stdout, completionCandidates: candidates });
+		const cancelPrompt = cancelTui.readPrompt();
+		cancelTui.pushKey({ type: "char", value: "/ski keep" });
+		cancelTui.pushKey({ type: "escape" });
+		cancelTui.pushKey({ type: "tab" });
+		cancelTui.pushKey({ type: "escape" });
+		cancelTui.pushKey({ type: "enter" });
+		await expect(cancelPrompt).resolves.toBe("/ski keep");
+		cancelTui.close();
+	});
+
+	it("scrolls a long transcript back and forth with PgUp/PgDn/Home/End", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		for (let index = 0; index < 40; index += 1) {
+			tui.appendLine(`old message ${index}`);
+		}
+		const lastFrame = () => stripAnsi(writes[writes.length - 1] ?? "");
+		expect(lastFrame()).toContain("old message 39");
+		expect(lastFrame()).not.toContain("old message 0");
+
+		tui.pushKey({ type: "tab" }); // transcript focus works without tool entries
+		tui.pushKey({ type: "home" }); // jump to the first message
+		expect(lastFrame()).toContain("old message 0");
+
+		tui.pushKey({ type: "pageDown" }); // scroll forward
+		tui.pushKey({ type: "end" }); // back to the latest content
+		expect(lastFrame()).toContain("old message 39");
 		tui.close();
 	});
 });

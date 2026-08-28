@@ -1,4 +1,12 @@
-import type { TuiFocus, TuiHeaderState, TuiInspectorState, TuiToolSnapshot, TuiTranscriptEntry } from "./model.ts";
+import { DEFAULT_COMPLETION_ROWS } from "./completion.ts";
+import type {
+	TuiCompletionState,
+	TuiFocus,
+	TuiHeaderState,
+	TuiInspectorState,
+	TuiToolSnapshot,
+	TuiTranscriptEntry,
+} from "./model.ts";
 import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
 export interface TuiPickerState {
@@ -15,11 +23,15 @@ export interface TuiFrameState {
 	editorLines: string[];
 	confirm?: string;
 	picker?: TuiPickerState;
+	completion?: TuiCompletionState;
+	completionRows?: number;
 	inspector?: TuiInspectorState;
 	focus?: TuiFocus;
 	selectedToolCallId?: string;
 	followLatest?: boolean;
 	unseenEventCount?: number;
+	/** First visible transcript row. Undefined = anchored to the latest content. */
+	transcriptScrollOffset?: number;
 	streaming: boolean;
 	/** Set false for a deliberately monochrome terminal. */
 	colors?: boolean;
@@ -48,20 +60,47 @@ export function renderFrame(state: TuiFrameState, width: number, height: number)
 	const paint = (tone: Tone, text: string): string => color(state.colors !== false, tone, text);
 	const header = renderHeader(state, safeWidth, paint);
 	const divider = paint("dim", "-".repeat(safeWidth));
-	const footer = footerLines(state, safeWidth, paint);
+	const footer = footerForHeight(state, safeWidth, safeHeight, paint);
 	const reserved = 1 + 1 + footer.length;
-	const bodyHeight = Math.max(1, safeHeight - reserved);
+	const bodyHeight = Math.max(0, safeHeight - reserved);
 	let body: string[];
 	if (state.picker) {
 		body = fitLines(pickerLines(state.picker, safeWidth, paint).slice(-bodyHeight), bodyHeight);
 	} else {
-		body = transcriptViewport(
-			transcriptLines(state, safeWidth, safeHeight, paint),
-			bodyHeight,
-			state.followLatest !== false,
-		);
+		body = transcriptViewportFor(state, width, height).lines;
 	}
 	return [header, divider, ...body, ...footer];
+}
+
+export interface TranscriptViewport {
+	lines: string[];
+	/** Largest valid scroll offset (0 when the transcript fits the viewport). */
+	maxScroll: number;
+	/** The offset actually applied for the current viewport. */
+	start: number;
+	bodyHeight: number;
+}
+
+/**
+ * Compute the transcript viewport and scroll bounds. Shared by the renderer and
+ * by session scroll commands so scrolling is always clamped identically.
+ */
+export function transcriptViewportFor(state: TuiFrameState, width: number, height: number): TranscriptViewport {
+	const safeWidth = Math.max(20, width);
+	const safeHeight = Math.max(7, height);
+	const paint = (tone: Tone, text: string): string => color(state.colors !== false, tone, text);
+	const footer = footerForHeight(state, safeWidth, safeHeight, paint);
+	const reserved = 1 + 1 + footer.length;
+	const bodyHeight = Math.max(0, safeHeight - reserved);
+	const rendered = transcriptLines(state, safeWidth, safeHeight, paint);
+	const maxScroll = Math.max(0, rendered.lines.length - bodyHeight);
+	const viewport = transcriptViewport(
+		rendered,
+		bodyHeight,
+		state.followLatest !== false,
+		state.transcriptScrollOffset,
+	);
+	return { lines: viewport.lines, maxScroll, start: viewport.start, bodyHeight };
 }
 
 function renderHeader(state: TuiFrameState, width: number, paint: (tone: Tone, text: string) => string): string {
@@ -77,13 +116,39 @@ function renderHeader(state: TuiFrameState, width: number, paint: (tone: Tone, t
 		paint("strong", " Z AGENT "),
 		paint("muted", `cwd: ${clean(state.header.cwd)}`),
 		paint("muted", `model: ${clean(state.header.model)}`),
+		...(state.header.context ? [paint("muted", `ctx: ${clean(state.header.context)}`)] : []),
 		paint(statusTone, `status: ${state.streaming ? "RUNNING" : "READY"}`),
 		paint("muted", `session: ${clean(state.header.session)}`),
 	];
 	return clip(fields.join("  "), width);
 }
 
-function footerLines(state: TuiFrameState, width: number, paint: (tone: Tone, text: string) => string): string[] {
+function footerForHeight(
+	state: TuiFrameState,
+	width: number,
+	height: number,
+	paint: (tone: Tone, text: string) => string,
+): string[] {
+	const baseline = footerLines(state, width, paint, 0);
+	const minimumBodyRows = height > baseline.length + 2 ? 1 : 0;
+	const available = Math.max(0, height - baseline.length - 2 - minimumBodyRows);
+	const configured = completionRowCount(state.completionRows);
+	return footerLines(state, width, paint, Math.min(configured, available));
+}
+
+function completionRowCount(value: number | undefined): number {
+	if (value === undefined) {
+		return DEFAULT_COMPLETION_ROWS;
+	}
+	return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : DEFAULT_COMPLETION_ROWS;
+}
+
+function footerLines(
+	state: TuiFrameState,
+	width: number,
+	paint: (tone: Tone, text: string) => string,
+	completionRows: number,
+): string[] {
 	if (state.picker) {
 		return [paint("muted", clip(pickerHint(width), width))];
 	}
@@ -91,6 +156,7 @@ function footerLines(state: TuiFrameState, width: number, paint: (tone: Tone, te
 	if (state.confirm) {
 		lines.push(paint("warning", clip(` CONFIRM ${clean(state.confirm)}`, width)));
 	}
+	lines.push(...completionLines(state.completion, width, completionRows, paint));
 	const border = paint("accent", `+${"-".repeat(Math.max(0, width - 2))}+`);
 	lines.push(border);
 	const editor = state.editorLines.length > 0 ? state.editorLines : ["|"];
@@ -103,16 +169,56 @@ function footerLines(state: TuiFrameState, width: number, paint: (tone: Tone, te
 		lines.push(`| ${padTo(content, contentWidth)} |`);
 	}
 	lines.push(border);
-	lines.push(paint("muted", clip(inputHint(width, state.streaming, state.focus), width)));
+	lines.push(
+		paint("muted", clip(inputHint(width, state.streaming, state.focus, state.completion !== undefined), width)),
+	);
 	return lines;
 }
 
-function inputHint(width: number, streaming: boolean, focus: TuiFocus | undefined): string {
+function completionLines(
+	completion: TuiCompletionState | undefined,
+	width: number,
+	maxRows: number,
+	paint: (tone: Tone, text: string) => string,
+): string[] {
+	if (!completion || completion.items.length === 0 || maxRows <= 0) {
+		return [];
+	}
+	const rowCount = Math.min(maxRows, completion.items.length);
+	const selectedIndex = Math.max(0, Math.min(completion.items.length - 1, completion.index));
+	const start = Math.max(0, Math.min(completion.items.length - rowCount, selectedIndex - rowCount + 1));
+	return completion.items.slice(start, start + rowCount).map((candidate, offset) => {
+		const selected = start + offset === selectedIndex;
+		const label = candidate.kind === "command" ? "command" : "skill";
+		const content = clean(`${selected ? ">" : " "} ${candidate.token}  ${candidate.description}  [${label}]`).replace(
+			/\n/gu,
+			" ",
+		);
+		return clip(paint(selected ? "accent" : "muted", content), width);
+	});
+}
+
+function inputHint(width: number, streaming: boolean, focus: TuiFocus | undefined, completing: boolean): string {
 	if (focus === "transcript") {
-		if (width >= 72) {
-			return " Up/Down select  Enter inspect  Left/Right view  Esc editor";
+		if (width >= 100) {
+			return " PgUp/PgDn scroll  Up/Down select  Home/End ends  Left/Right view  Enter inspect  Esc editor";
 		}
-		return " Up/Down select  Enter inspect  Esc editor";
+		if (width >= 72) {
+			return " PgUp/PgDn scroll  Up/Down select  Enter inspect  Esc editor";
+		}
+		if (width >= 54) {
+			return " PgUp/PgDn scroll  Enter inspect  Esc editor";
+		}
+		return " PgUp/PgDn scroll  Esc editor";
+	}
+	if (completing) {
+		if (width >= 72) {
+			return " Tab accept/cycle  Shift+Tab reverse  Esc cancel  Enter send";
+		}
+		if (width >= 54) {
+			return " Tab cycle  Shift+Tab reverse  Esc cancel";
+		}
+		return " Tab cycle  Esc cancel";
 	}
 	const interrupt = streaming ? "Ctrl+C interrupt" : "Ctrl+C exit";
 	if (width >= 72) {
@@ -179,13 +285,33 @@ function transcriptLines(
 	return { lines: rendered, selectedLine };
 }
 
-function transcriptViewport(rendered: TranscriptRender, height: number, followLatest: boolean): string[] {
-	if (followLatest || rendered.selectedLine === undefined) {
-		return fitLines(rendered.lines.slice(-height), height);
+function transcriptViewport(
+	rendered: TranscriptRender,
+	height: number,
+	followLatest: boolean,
+	scrollOffset: number | undefined,
+): { lines: string[]; start: number } {
+	const maxScroll = Math.max(0, rendered.lines.length - height);
+	if (height <= 0) {
+		return { lines: [], start: maxScroll };
 	}
-	const preferredStart = rendered.selectedLine - Math.floor(height / 3);
-	const start = Math.max(0, Math.min(Math.max(0, rendered.lines.length - height), preferredStart));
-	const visible = rendered.lines.slice(start, start + height);
+	let start: number;
+	let lines: string[];
+	if (scrollOffset !== undefined) {
+		start = Math.min(scrollOffset, maxScroll);
+		lines = windowAt(rendered.lines, start, height);
+	} else if (followLatest || rendered.selectedLine === undefined) {
+		start = maxScroll;
+		lines = fitLines(rendered.lines.slice(-height), height);
+	} else {
+		start = Math.max(0, Math.min(maxScroll, rendered.selectedLine - Math.floor(height / 3)));
+		lines = windowAt(rendered.lines, start, height);
+	}
+	return { lines, start };
+}
+
+function windowAt(lines: string[], start: number, height: number): string[] {
+	const visible = lines.slice(start, start + height);
 	while (visible.length < height) {
 		visible.push("");
 	}
@@ -290,6 +416,9 @@ function detailRowLimit(width: number, height: number): number {
 }
 
 function fitLines(lines: string[], height: number): string[] {
+	if (height <= 0) {
+		return [];
+	}
 	const result = lines.slice(-height);
 	while (result.length < height) {
 		result.unshift("");
