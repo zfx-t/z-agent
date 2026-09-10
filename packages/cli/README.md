@@ -92,3 +92,16 @@ When the editor's first token starts with `/`, it ranks built-in and skill-name
 candidates by exact, prefix, substring, then fuzzy character match. `Tab`
 accepts or cycles forward, `Shift+Tab` cycles backward, and `Esc` cancels the
 popup without invoking anything.
+
+`Ctrl+P` opens the command palette and inserts the selected token into the
+editor. `/commands` still runs the picked command immediately. Optional
+`~/.pillow/keys.json` remaps actions (`palette`, `submit`, `newline`, …).
+`interrupt` cannot leave `ctrl+c`.
+
+## Extensions
+
+Trusted project or `--extension` modules may export `createExtension(api)` and
+register commands, tools, status segments, tool renderers, and `on(event)`
+listeners. Hook-only `createExtension()` modules still load. Extensions cannot
+override built-in commands. Extension tools always confirm unless `--yes`.
+Load and runtime failures become local warnings.

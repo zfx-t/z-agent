@@ -1,4 +1,4 @@
-import type { TuiInspectorView, TuiToolSnapshot } from "./model.ts";
+import type { TuiInspectorView, TuiToolDetail, TuiToolRenderer, TuiToolSnapshot } from "./model.ts";
 
 export interface TuiSummaryRow {
 	label: string;
@@ -6,12 +6,13 @@ export interface TuiSummaryRow {
 }
 
 /** Returns only views backed by data available in the terminal view model. */
-export function availableInspectorViews(tool: TuiToolSnapshot): TuiInspectorView[] {
+export function availableInspectorViews(tool: TuiToolSnapshot, renderer?: TuiToolRenderer): TuiInspectorView[] {
+	const custom = safeRender(tool, renderer);
 	const views: TuiInspectorView[] = ["summary"];
-	if (tool.outputText && tool.outputText.length > 0) {
+	if ((custom?.output && custom.output.length > 0) || (tool.outputText && tool.outputText.length > 0)) {
 		views.push("output");
 	}
-	if (diffLines(tool).length > 0) {
+	if ((custom?.diff && custom.diff.length > 0) || diffLines(tool).length > 0) {
 		views.push("diff");
 	}
 	return views;
@@ -40,15 +41,35 @@ export function summaryRows(tool: TuiToolSnapshot): TuiSummaryRow[] {
 }
 
 /** A bounded renderer can use these source lines without inventing a patch. */
-export function detailLines(tool: TuiToolSnapshot, view: TuiInspectorView): string[] {
+export function detailLines(tool: TuiToolSnapshot, view: TuiInspectorView, renderer?: TuiToolRenderer): string[] {
+	const custom = safeRender(tool, renderer);
 	if (view === "summary") {
-		return summaryRows(tool).map((row) => `${row.label}: ${row.value}`);
+		return custom?.summary && custom.summary.length > 0
+			? custom.summary
+			: summaryRows(tool).map((row) => `${row.label}: ${row.value}`);
 	}
 	if (view === "output") {
+		if (custom?.output && custom.output.length > 0) {
+			return custom.output;
+		}
 		return tool.outputText?.split("\n") ?? ["No output available."];
+	}
+	if (custom?.diff && custom.diff.length > 0) {
+		return custom.diff;
 	}
 	const lines = diffLines(tool);
 	return lines.length > 0 ? lines : ["No diff preview available."];
+}
+
+function safeRender(tool: TuiToolSnapshot, renderer?: TuiToolRenderer): TuiToolDetail | undefined {
+	if (!renderer) {
+		return undefined;
+	}
+	try {
+		return renderer(tool);
+	} catch {
+		return undefined;
+	}
 }
 
 function diffLines(tool: TuiToolSnapshot): string[] {

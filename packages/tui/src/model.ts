@@ -4,12 +4,29 @@ export type TuiFocus = "editor" | "transcript";
 
 export type TuiInspectorView = "summary" | "output" | "diff";
 
+export interface TuiHeaderSegment {
+	id: string;
+	text: string;
+	priority: number;
+	required?: boolean;
+}
+
 export interface TuiHeaderState {
 	cwd: string;
 	model: string;
 	session: string;
 	context?: string;
+	/** When set, the header prefers these segments and drops low-priority ones first. */
+	segments?: readonly TuiHeaderSegment[];
 }
+
+export interface TuiToolDetail {
+	summary?: string[];
+	output?: string[];
+	diff?: string[];
+}
+
+export type TuiToolRenderer = (tool: TuiToolSnapshot) => TuiToolDetail | undefined;
 
 export interface TuiCompletionCandidate {
 	token: string;

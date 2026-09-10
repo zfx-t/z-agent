@@ -186,6 +186,30 @@ state, matcher result, mode, budget decision, and any explicit invocation. A
 running provider request keeps its snapshot even if a reload or activation is
 queued.
 
+## Command registry
+
+The CLI table of `InteractiveCommand` values. Built-ins register first.
+`parseSlashInput` resolves name or alias, then `validate`, then `run`.
+Extensions may add commands but cannot override a built-in. (ADR-0025)
+
+## Extension API
+
+`createExtension(api)` registration surface: commands, tools, status segments,
+tool renderers, and read-only `on(event)` listeners, plus the existing
+before/after tool hooks. Load and runtime failures stay local. (ADR-0025)
+
+## Status segment
+
+A named, priority-ordered fragment of the TUI status/header line. Low-priority
+optional segments drop first when the terminal is narrow; run state is
+required. (ADR-0025)
+
+## Keymap
+
+User chord → `TuiAction` map from `~/.pillow/keys.json`. `interrupt` is always
+`ctrl+c`. Unknown actions and illegal chords keep the default binding.
+(ADR-0025)
+
 ## Skills / extensions / project trust
 
 Skills are local, non-executable, untrusted supplemental instructions discovered

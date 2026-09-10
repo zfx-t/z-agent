@@ -53,4 +53,18 @@ describe("createConfirmGate", () => {
 		expect(await gate(ctx("write"))).toBeUndefined();
 		expect(await gate(ctx("write"))).toBeUndefined();
 	});
+
+	it("confirms extension tools that are not in the mutating set", async () => {
+		const asked: string[] = [];
+		const gate = createConfirmGate({
+			autoYes: false,
+			alsoConfirm: new Set(["ping"]),
+			ask: async (name) => {
+				asked.push(name);
+				return "deny";
+			},
+		});
+		expect(await gate(ctx("ping"))).toEqual({ block: true, reason: "User denied ping" });
+		expect(asked).toEqual(["ping"]);
+	});
 });

@@ -7,6 +7,8 @@ export interface ConfirmGateOptions {
 	/** Skip prompts (print mode / --yes). */
 	autoYes: boolean;
 	ask: (toolName: string, args: unknown) => Promise<ConfirmChoice>;
+	/** Extra tool names that always require confirmation (extension tools). */
+	alsoConfirm?: ReadonlySet<string>;
 }
 
 /**
@@ -19,7 +21,8 @@ export function createConfirmGate(
 	const always = new Set<string>();
 	return async (context) => {
 		const name = context.toolCall.name;
-		if (!MUTATING_TOOLS.has(name) || options.autoYes || always.has(name)) {
+		const gated = MUTATING_TOOLS.has(name) || Boolean(options.alsoConfirm?.has(name));
+		if (!gated || options.autoYes || always.has(name)) {
 			return undefined;
 		}
 		const choice = await options.ask(name, context.args);

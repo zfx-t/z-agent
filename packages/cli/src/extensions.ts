@@ -11,6 +11,7 @@ import type {
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 } from "@z-agent/agent";
+import type { ExtensionApi } from "./extension-api.ts";
 import { pillowProjectDir, pillowUserDir } from "./pillow-home.ts";
 
 export interface Extension {
@@ -49,21 +50,45 @@ export async function discoverExtensionPaths(cwd: string): Promise<string[]> {
 }
 
 export async function loadExtension(modulePath: string, cwd: string): Promise<Extension> {
+	return await loadExtensionInto(modulePath, cwd, noopExtensionApi());
+}
+
+export async function loadExtensionInto(modulePath: string, cwd: string, api: ExtensionApi): Promise<Extension> {
 	const resolved = resolve(cwd, modulePath);
 	const mod = (await import(pathToFileURL(resolved).href)) as {
-		default?: Extension | (() => Extension);
-		createExtension?: () => Extension;
+		default?: Extension | ((api: ExtensionApi) => Extension | undefined | Promise<Extension | undefined>);
+		createExtension?: (api: ExtensionApi) => Extension | undefined | Promise<Extension | undefined>;
 	};
 	if (typeof mod.createExtension === "function") {
-		return mod.createExtension();
+		return normalizeLoaded(await mod.createExtension(api), resolved);
 	}
 	if (typeof mod.default === "function") {
-		return mod.default();
+		return normalizeLoaded(await mod.default(api), resolved);
 	}
 	if (mod.default && typeof mod.default === "object") {
 		return mod.default;
 	}
 	throw new Error(`Extension ${resolved} must export createExtension or default`);
+}
+
+function normalizeLoaded(value: Extension | undefined, resolved: string): Extension {
+	if (value === undefined) {
+		return {};
+	}
+	if (typeof value === "object") {
+		return value;
+	}
+	throw new Error(`Extension ${resolved} must export createExtension or default`);
+}
+
+function noopExtensionApi(): ExtensionApi {
+	return {
+		registerCommand() {},
+		registerTool() {},
+		registerStatusSegment() {},
+		registerToolRenderer() {},
+		on() {},
+	};
 }
 
 export function composeBefore(

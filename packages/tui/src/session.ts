@@ -2,6 +2,8 @@ import { DEFAULT_COMPLETION_ROWS, rankSlashCompletions, slashCompletionToken } f
 import type { ConfirmChoice, ConfirmRequest } from "./confirm.ts";
 import { confirmChoiceFromKey, formatConfirmPrompt } from "./confirm.ts";
 import { EditorBuffer } from "./editor.ts";
+import type { TuiAction } from "./keymap.ts";
+import { type ParsedKeymap, parseKeymapConfig, resolveAction } from "./keymap.ts";
 import { type Key, parseInputChunk } from "./keys.ts";
 import type { TuiFrameState } from "./layout.ts";
 import { renderFrame, transcriptViewportFor } from "./layout.ts";
@@ -12,6 +14,7 @@ import type {
 	TuiHeaderState,
 	TuiInspectorState,
 	TuiInspectorView,
+	TuiToolRenderer,
 	TuiToolSnapshot,
 	TuiToolUpdate,
 	TuiTranscriptEntry,
@@ -34,6 +37,12 @@ export interface InteractiveTuiOptions {
 	onInterrupt?: () => void;
 	/** Supplies current built-in and skill slash candidates without invoking them. */
 	completionCandidates?: () => readonly TuiCompletionCandidate[];
+	/** Command palette rows. Defaults to completionCandidates. */
+	paletteCandidates?: () => readonly TuiCompletionCandidate[];
+	/** Parsed keymap. Interrupt remains ctrl+c. */
+	keymap?: ParsedKeymap;
+	/** Optional per-tool inspector renderer. Failures fall back to the default views. */
+	toolRenderer?: TuiToolRenderer;
 	/** Maximum visible completion rows. Defaults to 6. */
 	completionRows?: number;
 }
@@ -59,6 +68,9 @@ export class InteractiveTui {
 	private readonly headerFn?: () => TuiHeaderState;
 	private readonly onSubmitDuringRun?: (value: string) => void;
 	private readonly completionCandidates?: () => readonly TuiCompletionCandidate[];
+	private readonly paletteCandidates?: () => readonly TuiCompletionCandidate[];
+	private readonly keymap: ParsedKeymap;
+	private readonly toolRenderer?: TuiToolRenderer;
 	private readonly completionRows: number;
 	private readonly fixedColumns?: number;
 	private readonly fixedRows?: number;
@@ -110,6 +122,9 @@ export class InteractiveTui {
 		this.headerFn = options.header;
 		this.onSubmitDuringRun = options.onSubmitDuringRun;
 		this.completionCandidates = options.completionCandidates;
+		this.paletteCandidates = options.paletteCandidates;
+		this.keymap = options.keymap ?? parseKeymapConfig(undefined);
+		this.toolRenderer = options.toolRenderer;
 		this.completionRows = completionRowCount(options.completionRows);
 		this.fixedColumns = options.columns;
 		this.fixedRows = options.rows;
@@ -307,7 +322,14 @@ export class InteractiveTui {
 	}
 
 	readPrompt(): Promise<string | null> {
+		if (this.closed) {
+			return Promise.resolve(null);
+		}
 		return new Promise((resolve) => {
+			if (this.closed) {
+				resolve(null);
+				return;
+			}
 			const pending = this.pendingPrompts.shift();
 			if (pending !== undefined) {
 				queueMicrotask(() => resolve(pending));
@@ -373,18 +395,24 @@ export class InteractiveTui {
 			this.repaint();
 			return;
 		}
-		if (key.type === "ctrl" && key.value === "c") {
-			if (this.streaming) {
-				this.appendNotice("warning", "abort requested");
-				this.onInterrupt?.();
-				return;
-			}
-			this.promptResolve?.(null);
-			this.promptResolve = undefined;
-			return;
-		}
+		const action = resolveAction(key, this.keymap.bindings, {
+			completion: this.completion !== undefined && this.focus === "editor",
+			focus: this.focus,
+			modal: this.confirm !== undefined,
+			streaming: this.streaming,
+		});
 		if (key.type === "ctrl" && key.value === "t") {
 			this.toggleLastThinking();
+			return;
+		}
+		if (action === "interrupt") {
+			this.appendNotice("warning", "abort requested");
+			this.onInterrupt?.();
+			return;
+		}
+		if (action === "exit") {
+			this.promptResolve?.(null);
+			this.promptResolve = undefined;
 			return;
 		}
 		if (this.confirm) {
@@ -397,25 +425,42 @@ export class InteractiveTui {
 			}
 			return;
 		}
+		if (action === "completion.accept" || action === "completion.next" || action === "completion.prev") {
+			this.dispatchCompletionKey(action === "completion.prev" ? { type: "shiftTab" } : { type: "tab" });
+			this.repaint();
+			return;
+		}
 		if (this.focus === "editor" && this.dispatchCompletionKey(key)) {
 			this.repaint();
 			return;
 		}
-		if (key.type === "tab") {
+		if (action === "focus.transcript") {
 			this.toggleFocus();
 			this.repaint();
 			return;
 		}
+		if (action === "focus.editor") {
+			this.cancelCompletion();
+			this.focus = "editor";
+			this.repaint();
+			return;
+		}
+		if (action === "palette" && this.editor.value.length === 0) {
+			void this.openPalette();
+			return;
+		}
 		if (this.focus === "transcript") {
+			if (action) {
+				this.dispatchTranscriptAction(action, key);
+				return;
+			}
 			this.dispatchTranscriptKey(key);
 			return;
 		}
-		if (key.type === "ctrl" && key.value === "p" && this.editor.value.length === 0) {
-			const resolve = this.promptResolve;
-			this.promptResolve = undefined;
-			resolve?.("/commands");
-			this.repaint();
-			return;
+		if (action === "newline") {
+			key = { type: "newline" };
+		} else if (action === "submit") {
+			key = { type: "enter" };
 		}
 		let refreshCompletion = false;
 		if (key.type === "paste") {
@@ -567,6 +612,62 @@ export class InteractiveTui {
 		this.unseenEventCount = 0;
 	}
 
+	private async openPalette(): Promise<void> {
+		const items = this.paletteCandidates?.() ?? this.completionCandidates?.() ?? [];
+		if (items.length === 0) {
+			const resolve = this.promptResolve;
+			this.promptResolve = undefined;
+			resolve?.("/commands");
+			this.repaint();
+			return;
+		}
+		const index = await this.pickFromList(
+			"Commands",
+			items.map((item) => `${item.token}  ${item.description}`),
+			{ cancelValue: -1 },
+		);
+		if (index < 0) {
+			return;
+		}
+		const token = items[index]?.token;
+		if (!token) {
+			return;
+		}
+		this.editor.set(`${token} `);
+		this.focus = "editor";
+		this.updateCompletion();
+		this.repaint();
+	}
+
+	private dispatchTranscriptAction(action: TuiAction, key: Key): void {
+		if (action === "inspector.toggle") {
+			this.toggleInspector();
+			this.repaint();
+			return;
+		}
+		if (action === "inspector.next") {
+			this.moveToolSelection(1);
+			this.repaint();
+			return;
+		}
+		if (action === "inspector.prev") {
+			this.moveToolSelection(-1);
+			this.repaint();
+			return;
+		}
+		if (action === "inspector.view.next") {
+			this.moveInspectorView(1);
+			this.repaint();
+			return;
+		}
+		if (action === "inspector.view.prev") {
+			this.moveInspectorView(-1);
+			this.repaint();
+			return;
+		}
+		this.dispatchTranscriptKey(key);
+	}
+
 	private dispatchTranscriptKey(key: Key): void {
 		if (key.type === "escape" || key.type === "tab") {
 			this.focus = "editor";
@@ -690,7 +791,7 @@ export class InteractiveTui {
 		if (!inspector || inspector.tool.toolCallId !== this.selectedToolCallId) {
 			return;
 		}
-		const views = availableInspectorViews(inspector.tool);
+		const views = availableInspectorViews(inspector.tool, this.toolRenderer);
 		const current = views.indexOf(this.inspectorView);
 		const next = Math.max(0, Math.min(views.length - 1, current + direction));
 		this.inspectorView = views[next] ?? "summary";
@@ -706,7 +807,7 @@ export class InteractiveTui {
 
 	private inspectorMaxScroll(): number {
 		const inspector = this.activeInspector();
-		return inspector ? Math.max(0, detailLines(inspector.tool, this.inspectorView).length - 1) : 0;
+		return inspector ? Math.max(0, detailLines(inspector.tool, this.inspectorView, this.toolRenderer).length - 1) : 0;
 	}
 
 	private recordIncomingEvent(): void {
@@ -838,6 +939,7 @@ export class InteractiveTui {
 			streaming: this.streaming,
 			colors: this.colors,
 			transcriptScrollOffset: this.transcriptScrollOffset,
+			toolRenderer: this.toolRenderer,
 		};
 	}
 

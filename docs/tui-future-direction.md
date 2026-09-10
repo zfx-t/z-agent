@@ -241,7 +241,7 @@ Shipped in this cut: second picker of checkpoints (live path, leaf, off-path
 siblings) plus `inspectSession` refusal of cycles and broken parent links.
 Visual tree chrome beyond picker rows remains later.
 
-### R5: Commands, status, and extension surface
+### R5: Commands, status, and extension surface (implemented)
 
 Add a discoverable command palette, configurable key bindings, status segments,
 and stable rendering hooks for extensions.
@@ -251,6 +251,10 @@ Acceptance:
 - all commands are available from the keyboard;
 - missing or failed extensions degrade locally;
 - extension-provided presentation cannot bypass trust, jail, or confirmation.
+
+Shipped in this cut: command registry, `createExtension(api)`, status segments
+with token occupancy, `keys.json`, write-to-editor palette, and forced confirm
+for extension tools. (ADR-0025)
 
 ### R6: Themes, accessibility, and terminal resilience (baseline implemented)
 

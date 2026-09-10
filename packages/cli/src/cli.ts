@@ -5,11 +5,12 @@
 import { join } from "node:path";
 import { stdin } from "node:process";
 import { Agent, type AgentMessage, createAllTools } from "@z-agent/agent";
-import { createOpenAIResponsesModel, createOpenAIResponsesStream, type StreamFn } from "@z-agent/ai";
+import { createOpenAIResponsesModel, createOpenAIResponsesStream, emptyUsage, type StreamFn } from "@z-agent/ai";
 import { JsonlOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
-import { InteractiveTui, type TuiCompletionCandidate } from "@z-agent/tui";
+import { InteractiveTui, type TuiCompletionCandidate, type TuiHeaderSegment } from "@z-agent/tui";
 import { SigintAbort } from "./abort.ts";
 import { looksLikeReasoningModel, parseArgs, printHelp } from "./args.ts";
+import { createRegistry } from "./command-registry.ts";
 import { applyCompactionToSession, needsCompaction } from "./compaction.ts";
 import {
 	ensureStarterConfig,
@@ -20,16 +21,12 @@ import {
 	resolveModel,
 } from "./config.ts";
 import { createConfirmGate } from "./confirm.ts";
-import { composeBefore, discoverExtensionPaths, type Extension, loadExtension } from "./extensions.ts";
+import { createExtensionHost } from "./extension-host.ts";
+import { composeBefore, discoverExtensionPaths } from "./extensions.ts";
 import { runInteractive, submitTuiInputDuringRun } from "./interactive.ts";
 import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
-import {
-	formatCompactContext,
-	formatListModelsLine,
-	formatRuntimeStatus,
-	modelSettingsView,
-	reduceModelSettings,
-} from "./model-settings.ts";
+import { loadKeymap } from "./keys-config.ts";
+import { formatListModelsLine, formatRuntimeStatus, modelSettingsView, reduceModelSettings } from "./model-settings.ts";
 import { prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
 import { runPrint } from "./print.ts";
 import {
@@ -50,6 +47,12 @@ import {
 } from "./sessions.ts";
 import { type SkillCommandLevel, SkillInputCoordinator } from "./skill-commands.ts";
 import { createSkillManager, extractSkillPathHints, isPersistableAgentMessage } from "./skill-manager.ts";
+import {
+	accumulateAssistantUsage,
+	composeStatusLine,
+	formatUsageOccupancy,
+	safeSegmentText,
+} from "./status-segments.ts";
 import { buildCodingSystemPrompt } from "./system-prompt.ts";
 import { askYesNo, ensureProjectTrust } from "./trust.ts";
 
@@ -101,9 +104,12 @@ async function pickCheckpointSession(tui: InteractiveTui, loaded: SessionRecord)
 	return branch(loaded, checkpoint.id);
 }
 
-function completionCandidates(skillManager: Awaited<ReturnType<typeof createSkillManager>>): TuiCompletionCandidate[] {
+function completionCandidates(
+	skillManager: Awaited<ReturnType<typeof createSkillManager>>,
+	commands: typeof INTERACTIVE_COMMANDS,
+): TuiCompletionCandidate[] {
 	return [
-		...INTERACTIVE_COMMANDS.map((command) => ({
+		...commands.map((command) => ({
 			token: command.name,
 			description: command.description,
 			kind: "command" as const,
@@ -252,10 +258,17 @@ async function main(): Promise<void> {
 					return await askYesNo(`Trust project resources in ${cwd}?`);
 				});
 
-	const extensions: Extension[] = [];
+	const keymap = await loadKeymap(userPillow);
+	const registry = createRegistry(INTERACTIVE_COMMANDS);
+	let writeWarning: ((message: string) => void) | undefined;
+	const host = createExtensionHost({
+		cwd,
+		registry,
+		onWarning: (message) => writeWarning?.(message),
+	});
 	if (trusted) {
 		for (const extPath of extensionPaths) {
-			extensions.push(await loadExtension(extPath, cwd));
+			await host.load(extPath);
 		}
 	}
 
@@ -263,7 +276,7 @@ async function main(): Promise<void> {
 		apiKey,
 		baseUrl: resolved.hasModel ? resolved.baseUrl : process.env.OPENAI_BASE_URL,
 	});
-	let tools = [...createAllTools(cwd, { jailRoot: jail ? cwd : false }), skillManager.createReadTool()];
+	let tools = [...createAllTools(cwd, { jailRoot: jail ? cwd : false }), ...host.tools, skillManager.createReadTool()];
 	if (args.durable) {
 		const store = new JsonlOpStore(join(projectPillow, "harness"));
 		streamFn = wrapStreamFn(streamFn, store);
@@ -272,26 +285,73 @@ async function main(): Promise<void> {
 
 	let agent!: Agent;
 	let input!: SkillInputCoordinator;
+	let usage = emptyUsage();
 	const abort = new SigintAbort(() => agent);
+	const headerSegments = (): TuiHeaderSegment[] => {
+		const model = settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none";
+		return [
+			{ id: "cwd", text: `cwd: ${cwd}`, priority: 40 },
+			{ id: "model", text: `model: ${model}`, priority: 80 },
+			{ id: "ctx", text: `ctx: ${formatUsageOccupancy(usage, settings.contextWindow)}`, priority: 90 },
+			{ id: "session", text: `session: ${session.header.id.slice(0, 12)}`, priority: 30 },
+			...host.segments.flatMap((segment) => {
+				const text = safeSegmentText(segment);
+				return text ? [{ id: segment.id, text, priority: segment.priority, required: segment.required }] : [];
+			}),
+		];
+	};
 	const tui = !usePrint
 		? new InteractiveTui({
 				status: () =>
-					formatRuntimeStatus({
-						view: settings,
-						skillsMode: skillManager.getState().mode,
-						skillsActive: skillManager.getState().active.length,
-						cwd,
-					}).replace(/^\[status\] /, ""),
+					composeStatusLine(
+						[
+							{
+								id: "model",
+								order: 10,
+								priority: 80,
+								render: () =>
+									settings.hasModel
+										? settings.alias
+											? `${settings.alias}(${settings.id})`
+											: settings.id
+										: "none",
+							},
+							{
+								id: "thinking",
+								order: 20,
+								priority: 60,
+								render: () => `think ${settings.thinking}`,
+							},
+							{
+								id: "ctx",
+								order: 30,
+								priority: 90,
+								render: () => formatUsageOccupancy(usage, settings.contextWindow),
+							},
+							{
+								id: "skills",
+								order: 40,
+								priority: 50,
+								render: () => `skills ${skillManager.getState().mode}:${skillManager.getState().active.length}`,
+							},
+							{ id: "cwd", order: 50, priority: 40, render: () => cwd },
+							...host.segments,
+						],
+						80,
+					),
 				header: () => ({
 					cwd,
 					model: settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none",
-					context: formatCompactContext(settings.contextWindow),
+					context: formatUsageOccupancy(usage, settings.contextWindow),
 					session: session.header.id.slice(0, 12),
+					segments: headerSegments(),
 				}),
 				onSubmitDuringRun: (line) => {
 					submitTuiInputDuringRun(input, line);
 				},
-				completionCandidates: () => completionCandidates(skillManager),
+				completionCandidates: () => completionCandidates(skillManager, registry.list()),
+				keymap,
+				toolRenderer: host.toolRenderer,
 				onInterrupt: () => {
 					abort.handleSigint();
 				},
@@ -316,6 +376,7 @@ async function main(): Promise<void> {
 
 	const confirmGate = createConfirmGate({
 		autoYes,
+		alsoConfirm: host.extensionToolNames,
 		ask: async (toolName, toolArgs) => {
 			if (!tui) {
 				return "once";
@@ -343,9 +404,9 @@ async function main(): Promise<void> {
 			}
 			return messages;
 		},
-		beforeToolCall: composeBefore(confirmGate, extensions),
+		beforeToolCall: composeBefore(confirmGate, host.hooks),
 		afterToolCall: async (context, signal) => {
-			for (const ext of extensions) {
+			for (const ext of host.hooks) {
 				const result = await ext.afterToolCall?.(context, signal);
 				if (result) {
 					return result;
@@ -420,9 +481,20 @@ async function main(): Promise<void> {
 	input = new SkillInputCoordinator({
 		agent,
 		manager: skillManager,
+		commands: registry.list(),
 		write: writeSkillStatus,
 		onReload: () => tui?.refreshCompletions(),
 	});
+	host.bindAgent(agent);
+	agent.subscribe((event) => {
+		if (event.type === "message_end" && "role" in event.message && event.message.role === "assistant") {
+			usage = accumulateAssistantUsage(usage, event.message.usage);
+		}
+	});
+	writeWarning = (message) => writeSkillStatus("warning", `[ext] ${message}`);
+	for (const warning of [...keymap.warnings, ...host.warnings]) {
+		writeWarning(warning);
+	}
 
 	abort.attach();
 
@@ -499,6 +571,7 @@ async function main(): Promise<void> {
 		tui,
 		hasModel: resolved.hasModel && Boolean(apiKey),
 		input,
+		registry,
 		onNew: async () => {
 			await persist();
 			session = createSession(cwd);

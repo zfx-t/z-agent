@@ -51,6 +51,12 @@ SQLite backend TBD (separate ADR).
 
 Interactive assistant rows render GFM (headings, emphasis, lists, fences, links, tables) through `marked` lexer + first-party painter. Print mode stays raw. (ADR-0023)
 
-## Phase 2.10 — Session checkpoints (R4 first cut)
+## Phase 2.10 — Session checkpoints (R4 first cut) (done)
 
 `/sessions` and the startup picker restore a node through `branch()`. Malformed JSONL is refused instead of truncated. Tree chrome beyond picker rows is later. (ADR-0024)
+
+## Phase 2.11 — Command registry and extension surface (done)
+
+Command registry, Extension API v1 (commands / tools / status segments / `on` /
+tool renderers), header occupancy, `~/.pillow/keys.json`, and a write-to-editor
+command palette. Extension tools stay behind confirm. (ADR-0025)

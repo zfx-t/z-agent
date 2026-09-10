@@ -5,9 +5,11 @@ import type {
 	TuiFocus,
 	TuiHeaderState,
 	TuiInspectorState,
+	TuiToolRenderer,
 	TuiToolSnapshot,
 	TuiTranscriptEntry,
 } from "./model.ts";
+import { fitLabeledSegments } from "./segments.ts";
 import { clean, clip, color, padTo, type Tone, visibleWidth, wrap } from "./text.ts";
 import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
@@ -37,6 +39,7 @@ export interface TuiFrameState {
 	streaming: boolean;
 	/** Set false for a deliberately monochrome terminal. */
 	colors?: boolean;
+	toolRenderer?: TuiToolRenderer;
 }
 
 /** Render a stable terminal frame with a live editor and optional inspector. */
@@ -90,23 +93,42 @@ export function transcriptViewportFor(state: TuiFrameState, width: number, heigh
 }
 
 function renderHeader(state: TuiFrameState, width: number, paint: (tone: Tone, text: string) => string): string {
+	const statusTone: Tone = state.streaming ? "accent" : "success";
+	const run = {
+		id: "run",
+		text: paint(statusTone, `status: ${state.streaming ? "RUNNING" : "READY"}`),
+		priority: 100,
+		required: true,
+	};
+	if (state.header?.segments && state.header.segments.length > 0) {
+		const brand = paint("strong", " Z AGENT ");
+		const body = fitLabeledSegments(
+			[
+				...state.header.segments.map((segment) => ({
+					...segment,
+					text: paint(segment.id === "run" ? statusTone : "muted", clean(segment.text)),
+				})),
+				run,
+			],
+			Math.max(0, width - visibleWidth(brand) - 2),
+		);
+		return clip(`${brand}  ${body}`, width);
+	}
 	if (!state.header) {
 		const fallback = `${paint("strong", " Z AGENT ")}${paint("dim", " | ")}${clean(state.status)}`;
-		return clip(
-			`${fallback}${paint(state.streaming ? "accent" : "success", state.streaming ? " RUNNING " : " READY ")}`,
-			width,
-		);
+		return clip(`${fallback}${paint(statusTone, state.streaming ? " RUNNING " : " READY ")}`, width);
 	}
-	const statusTone: Tone = state.streaming ? "accent" : "success";
 	const fields = [
-		paint("strong", " Z AGENT "),
-		paint("muted", `cwd: ${clean(state.header.cwd)}`),
-		paint("muted", `model: ${clean(state.header.model)}`),
-		...(state.header.context ? [paint("muted", `ctx: ${clean(state.header.context)}`)] : []),
-		paint(statusTone, `status: ${state.streaming ? "RUNNING" : "READY"}`),
-		paint("muted", `session: ${clean(state.header.session)}`),
+		{ id: "cwd", text: paint("muted", `cwd: ${clean(state.header.cwd)}`), priority: 40 },
+		{ id: "model", text: paint("muted", `model: ${clean(state.header.model)}`), priority: 80 },
+		...(state.header.context
+			? [{ id: "ctx", text: paint("muted", `ctx: ${clean(state.header.context)}`), priority: 90 }]
+			: []),
+		run,
+		{ id: "session", text: paint("muted", `session: ${clean(state.header.session)}`), priority: 30 },
 	];
-	return clip(fields.join("  "), width);
+	const brand = paint("strong", " Z AGENT ");
+	return clip(`${brand}  ${fitLabeledSegments(fields, Math.max(0, width - visibleWidth(brand) - 2))}`, width);
 }
 
 function footerForHeight(
@@ -262,7 +284,7 @@ function transcriptLines(
 		}
 		rendered.push(...renderTranscriptEntry(entry, width, paint, selected, state.colors !== false));
 		if (state.inspector !== undefined && toolCallId !== undefined && state.inspector.tool.toolCallId === toolCallId) {
-			rendered.push(...inlineInspectorLines(state.inspector, width, height, paint));
+			rendered.push(...inlineInspectorLines(state.inspector, width, height, paint, state.toolRenderer));
 		}
 	}
 	if (state.followLatest === false && (state.unseenEventCount ?? 0) > 0) {
@@ -379,14 +401,15 @@ function inlineInspectorLines(
 	width: number,
 	height: number,
 	paint: (tone: Tone, text: string) => string,
+	renderer?: TuiToolRenderer,
 ): string[] {
 	const view = inspector.view ?? "summary";
-	const views = availableInspectorViews(inspector.tool);
+	const views = availableInspectorViews(inspector.tool, renderer);
 	const tabs = views.map((item) => (item === view ? item.toUpperCase() : item)).join("  ");
 	const prefix = "    ";
 	const contentWidth = Math.max(1, width - visibleWidth(prefix));
 	const maxRows = detailRowLimit(width, height);
-	const detail = detailLines(inspector.tool, view)
+	const detail = detailLines(inspector.tool, view, renderer)
 		.flatMap((line) => wrap(clean(line), contentWidth))
 		.slice(inspector.scrollOffset ?? 0, (inspector.scrollOffset ?? 0) + maxRows);
 	const statusTone: Tone =

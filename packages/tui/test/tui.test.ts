@@ -578,6 +578,28 @@ describe("InteractiveTui", () => {
 		tui.close();
 	});
 
+	it("inserts a palette command into the editor when candidates exist", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 60,
+			rows: 12,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({
+			stdin,
+			stdout,
+			completionCandidates: () => [{ token: "/status", description: "Show runtime status", kind: "command" }],
+		});
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "ctrl", value: "p" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		tui.pushKey({ type: "enter" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("/status");
+		tui.close();
+	});
+
 	it("searches a picker and opens the command palette with ctrl-p", async () => {
 		const stdout = {
 			write: () => true,

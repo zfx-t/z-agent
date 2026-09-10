@@ -24,6 +24,7 @@
 | [0022](0022-pillow-home.md) | Pillow home and user config | Accepted |
 | [0023](0023-tui-markdown.md) | Assistant Markdown via marked lexer | Accepted |
 | [0024](0024-session-checkpoints.md) | Session checkpoints | Accepted |
+| [0025](0025-extension-surface.md) | Command registry and extension surface | Accepted |
 
 ## Format
 
