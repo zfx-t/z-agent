@@ -164,6 +164,50 @@ describe("Agent shell", () => {
 		expect(agent.state.isStreaming).toBe(false);
 	});
 
+	it("throws when reset() is called while streaming without clearing the transcript", async () => {
+		const streamStarted = createDeferred();
+		const release = createDeferred();
+		const scripted = createScriptedStream({
+			responses: [
+				async (_ctx, options) => {
+					streamStarted.resolve();
+					await Promise.race([
+						release.promise,
+						new Promise<void>((resolve) => {
+							if (options?.signal?.aborted) {
+								resolve();
+								return;
+							}
+							options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+						}),
+					]);
+					if (options?.signal?.aborted) {
+						return scriptedAssistantMessage("aborted", { stopReason: "aborted", errorMessage: "aborted" });
+					}
+					return scriptedAssistantMessage("done");
+				},
+			],
+		});
+		const agent = new Agent({
+			streamFn: scripted.streamFn,
+			initialState: { model: scripted.model },
+		});
+
+		const first = agent.prompt("hello");
+		await streamStarted.promise;
+		expect(agent.state.isStreaming).toBe(true);
+		expect(agent.state.messages.map((m) => m.role)).toEqual(["user"]);
+
+		expect(() => agent.reset()).toThrow("Agent is already processing. Wait for completion before resetting.");
+		expect(agent.state.isStreaming).toBe(true);
+		expect(agent.state.messages.map((m) => m.role)).toEqual(["user"]);
+
+		release.resolve();
+		await first;
+		expect(agent.state.isStreaming).toBe(false);
+		expect(agent.state.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+	});
+
 	it("throws when continue() is called while streaming (mutex)", async () => {
 		const streamStarted = createDeferred();
 		const release = createDeferred();

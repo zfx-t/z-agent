@@ -897,10 +897,15 @@ describe("sequential tools (prepare → execute → after)", () => {
 				scriptedAssistantMessage("re-issue ok"),
 			],
 		});
+		let prepared = 0;
 		const collector = createAgentEventCollector();
 		const config: AgentLoopConfig = {
 			model: scripted.model,
 			convertToLlm: identityConvert,
+			beforeToolCall: async () => {
+				prepared++;
+				return undefined;
+			},
 		};
 
 		const newMessages = await runAgentLoop(
@@ -913,6 +918,7 @@ describe("sequential tools (prepare → execute → after)", () => {
 		);
 
 		expect(executed).toEqual([]);
+		expect(prepared).toBe(0);
 		const toolResults = newMessages.filter((m) => m.role === "toolResult");
 		expect(toolResults).toHaveLength(2);
 		for (const tr of toolResults) {
@@ -962,6 +968,181 @@ describe("sequential tools (prepare → execute → after)", () => {
 
 		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
 		expect(scripted.getPendingResponseCount()).toBe(1);
+	});
+
+	it("continues the inner loop when only some tool results set terminate:true", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: `echoed: ${params.value}` }],
+			details: { value: params.value },
+			terminate: params.value === "first",
+		}));
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "first" }, { id: "t1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "t2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				scriptedAssistantMessage("continued"),
+			],
+		});
+
+		const newMessages = await runAgentLoop(
+			[user("mixed terminate")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: scripted.model, convertToLlm: identityConvert, toolExecution: "parallel" },
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "assistant"]);
+		expect(scripted.state.callCount).toBe(2);
+	});
+
+	it("stops further LLM calls when beforeToolCall blocks with terminate:true", async () => {
+		let executed = false;
+		const tool = echoTool(async () => {
+			executed = true;
+			return { content: [{ type: "text", text: "nope" }], details: { value: "x" } };
+		});
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "hi" }, { id: "b1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("should not run"),
+			],
+		});
+
+		const newMessages = await runAgentLoop(
+			[user("block terminate")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				beforeToolCall: async () => ({ block: true, reason: "Blocked by policy", terminate: true }),
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(executed).toBe(false);
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(scripted.getPendingResponseCount()).toBe(1);
+	});
+
+	it("continues after a mixed batch with one terminating blocked call", async () => {
+		const executed: string[] = [];
+		const tool = echoTool(async (_id, params) => {
+			executed.push(params.value);
+			return {
+				content: [{ type: "text", text: `echoed: ${params.value}` }],
+				details: { value: params.value },
+			};
+		});
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "first" }, { id: "t1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "t2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				scriptedAssistantMessage("done"),
+			],
+		});
+
+		await runAgentLoop(
+			[user("mixed block")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				toolExecution: "parallel",
+				beforeToolCall: async ({ args }) => {
+					const value = (args as { value: string }).value;
+					return value === "first" ? { block: true, reason: "Blocked first", terminate: true } : undefined;
+				},
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(executed).toEqual(["second"]);
+		expect(scripted.state.callCount).toBe(2);
+	});
+
+	it("lets afterToolCall mark the whole batch as terminating", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: `echoed: ${params.value}` }],
+			details: { value: params.value },
+		}));
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "x" }, { id: "a1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("should not run"),
+			],
+		});
+
+		const newMessages = await runAgentLoop(
+			[user("after terminate")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				afterToolCall: async () => ({ terminate: true }),
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(scripted.getPendingResponseCount()).toBe(1);
+	});
+
+	it("still drains follow-up after a terminating tool batch", async () => {
+		const tool = echoTool(async (_id, params) => ({
+			content: [{ type: "text", text: `echoed: ${params.value}` }],
+			details: { value: params.value },
+			terminate: true,
+		}));
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "stop" }, { id: "term" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("after follow-up"),
+			],
+		});
+		let followUpPolls = 0;
+
+		const newMessages = await runAgentLoop(
+			[user("terminate then follow")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				getFollowUpMessages: async () => {
+					followUpPolls++;
+					return followUpPolls === 1 ? [user("follow", 2)] : [];
+				},
+			},
+			createAgentEventCollector().sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(followUpPolls).toBe(2);
+		expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "user", "assistant"]);
 	});
 
 	it("returns error toolResult for unknown tool without execute", async () => {
@@ -1400,6 +1581,82 @@ describe("parallel three-phase tools", () => {
 		expect(endIndices).toHaveLength(2);
 		expect(firstToolResultMsg).toBeGreaterThan(Math.max(...endIndices));
 	});
+
+	it("aborts remaining parallel prepares and keeps toolResult artifacts in source order", async () => {
+		const ac = new AbortController();
+		let firstPrepared: () => void = () => {};
+		const firstGate = new Promise<void>((resolve) => {
+			firstPrepared = resolve;
+		});
+		const executed: string[] = [];
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
+			async execute(_id, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage(
+					[
+						scriptedToolCall("echo", { value: "first" }, { id: "tool-1" }),
+						scriptedToolCall("echo", { value: "second" }, { id: "tool-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				scriptedAssistantMessage("should not run"),
+			],
+		});
+		const collector = createAgentEventCollector();
+		const run = runAgentLoop(
+			[user("abort-parallel")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				toolExecution: "parallel",
+				beforeToolCall: async ({ args }) => {
+					if ((args as { value: string }).value === "first") {
+						firstPrepared();
+						await new Promise<void>((_resolve, reject) => {
+							if (ac.signal.aborted) {
+								reject(new Error("Operation aborted"));
+								return;
+							}
+							ac.signal.addEventListener(
+								"abort",
+								() => {
+									reject(new Error("Operation aborted"));
+								},
+								{ once: true },
+							);
+						});
+					}
+					return undefined;
+				},
+			},
+			collector.sink,
+			ac.signal,
+			scripted.streamFn,
+		);
+		await firstGate;
+		ac.abort();
+		const newMessages = await run;
+
+		expect(executed).toEqual([]);
+		const toolResults = newMessages.filter((m) => m.role === "toolResult");
+		expect(toolResults.map((m) => (m.role === "toolResult" ? m.toolCallId : ""))).toEqual(["tool-1", "tool-2"]);
+		expect(toolResults.every((m) => m.role === "toolResult" && m.isError)).toBe(true);
+		expect(newMessages.filter((m) => m.role === "assistant")).toHaveLength(1);
+		expect(scripted.getPendingResponseCount()).toBe(1);
+	});
 });
 
 describe("runAgentLoopContinue", () => {
@@ -1679,6 +1936,86 @@ describe("steering and follow-up drains", () => {
 		expect(userTexts).toEqual(["start", "steer-1", "steer-2", "follow"]);
 		// Initial drain injects s1 before first assistant; s2 then follow → 3 LLM calls.
 		expect(call).toBe(3);
+	});
+
+	it("records turn_end → prepareNextTurn → shouldStopAfterTurn → steering, and follow-up only after inner exit", async () => {
+		const tool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "echo",
+			parameters: z.object({ value: z.string() }),
+			async execute(_id, params) {
+				return {
+					content: [{ type: "text", text: `ok:${(params as { value: string }).value}` }],
+					details: {},
+				};
+			},
+		};
+		const order: string[] = [];
+		let steeringPolls = 0;
+		let followUpPolls = 0;
+		const scripted = createScriptedStream({
+			responses: [
+				scriptedAssistantMessage([scriptedToolCall("echo", { value: "a" }, { id: "t1" })], {
+					stopReason: "toolUse",
+				}),
+				scriptedAssistantMessage("after tools"),
+				scriptedAssistantMessage("after follow-up"),
+			],
+		});
+		const collector = createAgentEventCollector();
+
+		await runAgentLoop(
+			[user("start")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{
+				model: scripted.model,
+				convertToLlm: identityConvert,
+				prepareNextTurn: async () => {
+					order.push("prepareNextTurn");
+					return undefined;
+				},
+				shouldStopAfterTurn: async () => {
+					order.push("shouldStopAfterTurn");
+					return false;
+				},
+				getSteeringMessages: async () => {
+					steeringPolls++;
+					order.push(`steering:${steeringPolls}`);
+					return [];
+				},
+				getFollowUpMessages: async () => {
+					followUpPolls++;
+					order.push(`follow-up:${followUpPolls}`);
+					return followUpPolls === 1 ? [user("follow", 2)] : [];
+				},
+			},
+			collector.sink,
+			undefined,
+			scripted.streamFn,
+		);
+
+		expect(order).toEqual([
+			"steering:1",
+			"prepareNextTurn",
+			"shouldStopAfterTurn",
+			"steering:2",
+			"prepareNextTurn",
+			"shouldStopAfterTurn",
+			"steering:3",
+			"follow-up:1",
+			"prepareNextTurn",
+			"shouldStopAfterTurn",
+			"steering:4",
+			"follow-up:2",
+		]);
+
+		const types = collector.types().filter((t) => t !== "message_update");
+		const firstTurnEnd = types.indexOf("turn_end");
+		expect(firstTurnEnd).toBeGreaterThan(-1);
+		expect(types[firstTurnEnd + 1]).toBe("turn_start");
+		expect(followUpPolls).toBe(2);
+		expect(steeringPolls).toBe(4);
 	});
 });
 
