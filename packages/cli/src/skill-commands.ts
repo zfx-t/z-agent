@@ -1,11 +1,12 @@
 import type { Agent, AgentEvent, AgentMessage } from "@z-agent/agent";
-import type { SkillDiagnostic, SkillMode } from "@z-agent/skills";
-import type { InteractiveCommand } from "./interactive-commands.ts";
+import { findCommand, runCommand } from "./command-registry.ts";
+import type { CommandContext, CommandLevel, InteractiveCommand } from "./command-types.ts";
 import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
-import { extractSkillPathHints, type SkillManager, type SkillStatus } from "./skill-manager.ts";
+import { userTextMessage } from "./skill-handlers.ts";
+import { extractSkillPathHints, type SkillManager } from "./skill-manager.ts";
 import { type ParsedInput, parseSlashInput } from "./slash.ts";
 
-export type SkillCommandLevel = "info" | "warning" | "error";
+export type SkillCommandLevel = CommandLevel;
 
 export type SkillInputResult =
 	| { kind: "handled"; error?: boolean }
@@ -18,36 +19,6 @@ export interface SkillInputCoordinatorOptions {
 	commands?: readonly InteractiveCommand[];
 	write?: (level: SkillCommandLevel, text: string) => void;
 	onReload?: () => void;
-}
-
-const SKILL_BUILTINS = new Set(["/skill", "/skills", "/reload"]);
-
-function userMessage(text: string): AgentMessage {
-	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
-}
-
-function splitFirst(value: string): { first: string; rest: string } {
-	const trimmed = value.trim();
-	const separator = trimmed.search(/\s/u);
-	return separator < 0
-		? { first: trimmed, rest: "" }
-		: { first: trimmed.slice(0, separator), rest: trimmed.slice(separator).trimStart() };
-}
-
-function stateLabel(status: SkillStatus): string {
-	const labels = [
-		status.active ? "active" : "inactive",
-		...(status.hidden ? ["hidden"] : []),
-		...(status.stale ? ["stale"] : []),
-		...(status.manualOff ? ["manual-off"] : []),
-		...(status.collision ? ["collision"] : []),
-	];
-	return labels.join(",");
-}
-
-function formatDiagnostic(diagnostic: SkillDiagnostic): string {
-	const subject = diagnostic.skillName ? ` ${diagnostic.skillName}` : "";
-	return `[${diagnostic.severity}]${subject} ${diagnostic.code}: ${diagnostic.message}`;
 }
 
 export class SkillInputCoordinator {
@@ -102,6 +73,16 @@ export class SkillInputCoordinator {
 		return parseSlashInput(line, this.manager.getIndex(), this.commands);
 	}
 
+	private context(): CommandContext {
+		return {
+			agent: this.agent,
+			commands: this.commands,
+			write: this.write,
+			skills: this.manager,
+			onReload: this.onReload,
+		};
+	}
+
 	private async drainAtBoundary(): Promise<void> {
 		if (this.draining) {
 			return;
@@ -114,8 +95,11 @@ export class SkillInputCoordinator {
 					return;
 				}
 				const parsed = this.parse(line);
-				if (parsed.kind === "builtin" && !SKILL_BUILTINS.has(parsed.name)) {
-					return;
+				if (parsed.kind === "builtin") {
+					const command = findCommand(this.commands, parsed.name);
+					if (!command?.availableDuringRun) {
+						return;
+					}
 				}
 				this.pending.shift();
 				try {
@@ -145,106 +129,24 @@ export class SkillInputCoordinator {
 					pathHints: extractSkillPathHints(parsed.text),
 				});
 			}
-			const message = userMessage(parsed.text);
-			return { kind: "request", message };
+			return { kind: "request", message: userTextMessage(parsed.text) };
 		}
 		if (parsed.kind === "skill") {
 			const snapshot = await this.manager.prepareSnapshot({ explicitName: parsed.name, args: parsed.args });
 			this.write("info", `[skill] ${parsed.name} activated for this request`);
 			return { kind: "request", message: this.manager.createInvocationMessage(snapshot) };
 		}
-		if (!SKILL_BUILTINS.has(parsed.name)) {
-			return { kind: "builtin", name: parsed.name, args: parsed.args };
-		}
-		if (parsed.name === "/reload") {
-			if (parsed.args.length > 0) {
-				this.write("error", "Usage: /reload");
-				return { kind: "handled", error: true };
+		const command = findCommand(this.commands, parsed.name);
+		if (command?.availableDuringRun) {
+			const result = await runCommand(command, this.context(), parsed.args);
+			if (result.kind === "request") {
+				return { kind: "request", message: result.message };
 			}
-			const result = await this.manager.reload();
-			this.onReload?.();
-			this.write("info", `[reload] registry=${result.registryVersion} skills=${result.skillCount}`);
-			for (const diagnostic of result.diagnostics) {
-				if (diagnostic.severity !== "info") {
-					this.write(diagnostic.severity, formatDiagnostic(diagnostic));
-				}
-			}
-			return { kind: "handled" };
-		}
-		if (parsed.name === "/skills") {
-			return await this.executeSkills(parsed.args);
-		}
-		return await this.executeSkill(parsed.args);
-	}
-
-	private async executeSkills(args: string): Promise<SkillInputResult> {
-		if (args.startsWith("mode ")) {
-			const mode = args.slice("mode ".length) as SkillMode;
-			const result = await this.manager.setMode(mode);
-			this.write(result.ok ? "info" : "error", result.message);
-			return result.ok ? { kind: "handled" } : { kind: "handled", error: true };
-		}
-		const statuses = this.manager.list(args);
-		const state = this.manager.getState();
-		this.write(
-			"info",
-			`[skills] mode=${state.mode} active=${state.active.length} stale=${state.stale.length} registry=${this.manager.getIndex().version}`,
-		);
-		if (statuses.length === 0) {
-			this.write("info", args ? `No skills match: ${args}` : "No skills discovered");
-		}
-		for (const status of statuses) {
-			const origin = status.origin ? ` origin=${status.origin}` : "";
-			const match =
-				status.score !== undefined
-					? ` score=${status.score}${status.matchExclusion ? ` exclusion=${status.matchExclusion}` : ""}${
-							status.matchReasons && status.matchReasons.length > 0
-								? ` reason=${status.matchReasons.join(";")}`
-								: ""
-						}`
-					: "";
-			this.write(
-				status.stale ? "warning" : "info",
-				`${status.name} [${stateLabel(status)}] ${status.source} ${status.location}${origin}${match} - ${status.description}`,
-			);
-		}
-		for (const diagnostic of this.manager.getDiagnostics()) {
-			if (diagnostic.severity !== "info") {
-				this.write(diagnostic.severity, formatDiagnostic(diagnostic));
+			if (result.kind === "continue") {
+				return { kind: "handled", error: result.error };
 			}
 		}
-		return { kind: "handled" };
-	}
-
-	private async executeSkill(args: string): Promise<SkillInputResult> {
-		const { first, rest } = splitFirst(args);
-		if (first === "all") {
-			if (rest) {
-				this.write("error", "Usage: /skill all");
-				return { kind: "handled", error: true };
-			}
-			const results = await this.manager.activateAll();
-			const activated = results.filter((result) => result.ok && result.changed).length;
-			for (const result of results) {
-				if (!result.ok) {
-					this.write("error", result.message);
-				}
-			}
-			this.write("info", `[skill] activated ${activated}; active=${this.manager.getState().active.length}`);
-			return results.some((result) => !result.ok) ? { kind: "handled", error: true } : { kind: "handled" };
-		}
-		if (first.startsWith("-")) {
-			if (rest || first.length === 1) {
-				this.write("error", "Usage: /skill -<name>");
-				return { kind: "handled", error: true };
-			}
-			const result = await this.manager.deactivate(first.slice(1), "command");
-			this.write(result.ok ? "info" : "error", result.message);
-			return result.ok ? { kind: "handled" } : { kind: "handled", error: true };
-		}
-		const snapshot = await this.manager.prepareSnapshot({ explicitName: first, args: rest });
-		this.write("info", `[skill] ${first} activated for this request`);
-		return { kind: "request", message: this.manager.createInvocationMessage(snapshot) };
+		return { kind: "builtin", name: parsed.name, args: parsed.args };
 	}
 }
 

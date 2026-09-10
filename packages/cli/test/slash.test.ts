@@ -88,6 +88,12 @@ describe("parseSlashInput", () => {
 		});
 	});
 
+	it("canonicalizes built-in aliases", () => {
+		expect(parseSlashInput("/quit", index())).toEqual({ kind: "builtin", name: "/exit", args: "" });
+		expect(parseSlashInput("/help", index())).toEqual({ kind: "builtin", name: "/commands", args: "" });
+		expect(parseSlashInput("/resume", index())).toEqual({ kind: "builtin", name: "/sessions", args: "" });
+	});
+
 	it("passes unknown slash input through as ordinary user text", () => {
 		expect(parseSlashInput("/unknown keep this", index("code-review"))).toEqual({
 			kind: "text",

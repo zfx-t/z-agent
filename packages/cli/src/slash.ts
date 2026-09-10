@@ -1,6 +1,6 @@
-import type { InteractiveCommand } from "./interactive-commands.ts";
+import { findCommand } from "./command-registry.ts";
+import type { InteractiveCommand } from "./command-types.ts";
 import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
-import { parseModelCommand } from "./model-settings.ts";
 
 export interface SlashSkillDescriptor {
 	metadata: { name: string };
@@ -16,8 +16,6 @@ export type ParsedInput =
 	| { kind: "text"; text: string }
 	| { kind: "error"; message: string };
 
-const BUILTIN_ALIASES = new Set(["/help", "/quit", "/resume"]);
-
 /** Parse a submitted line without performing commands, activation, or I/O. */
 export function parseSlashInput(
 	line: string,
@@ -32,11 +30,11 @@ export function parseSlashInput(
 	const separator = trimmed.search(/\s/u);
 	const token = separator < 0 ? trimmed : trimmed.slice(0, separator);
 	const args = separator < 0 ? "" : trimmed.slice(separator).trimStart();
-	const builtins = new Set(commands.map((command) => command.name));
+	const command = findCommand(commands, token);
 
-	if (builtins.has(token) || BUILTIN_ALIASES.has(token)) {
-		const error = validateBuiltin(token, args);
-		return error ? { kind: "error", message: error } : { kind: "builtin", name: token, args };
+	if (command) {
+		const error = command.validate?.(args);
+		return error ? { kind: "error", message: error } : { kind: "builtin", name: command.name, args };
 	}
 
 	const skillName = token.slice(1);
@@ -47,28 +45,4 @@ export function parseSlashInput(
 	}
 
 	return { kind: "text", text: line };
-}
-
-function validateBuiltin(name: string, args: string): string | undefined {
-	if (name === "/skill" && args.length === 0) {
-		return "Usage: /skill <name> [args], /skill -<name>, or /skill all";
-	}
-	if (name === "/skill" && args === "-") {
-		return "Usage: /skill -<name>";
-	}
-	if (name === "/skills" && (args === "mode" || args.startsWith("mode "))) {
-		const parts = args.split(/\s+/u);
-		if (parts.length !== 2 || !isSkillMode(parts[1])) {
-			return "Usage: /skills mode progressive|full|index";
-		}
-	}
-	if (name === "/model") {
-		const parsed = parseModelCommand(args);
-		return parsed.kind === "error" ? parsed.message : undefined;
-	}
-	return undefined;
-}
-
-function isSkillMode(value: string | undefined): boolean {
-	return value === "progressive" || value === "full" || value === "index";
 }
