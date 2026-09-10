@@ -101,6 +101,10 @@ export function createExtensionHost(options: {
 		},
 	};
 
+	/**
+	 * Runs inside a TUI repaint. A failing renderer is removed first and the
+	 * warning is deferred so the notice cannot re-enter the same paint.
+	 */
 	const toolRenderer: TuiToolRenderer = (tool: TuiToolSnapshot): TuiToolDetail | undefined => {
 		const render = renderers.get(tool.toolName);
 		if (!render) {
@@ -109,7 +113,10 @@ export function createExtensionHost(options: {
 		try {
 			return render(tool);
 		} catch (error) {
-			warn(`renderer ${tool.toolName}: ${error instanceof Error ? error.message : String(error)}`);
+			renderers.delete(tool.toolName);
+			const message = `renderer ${tool.toolName} disabled: ${error instanceof Error ? error.message : String(error)}`;
+			warnings.push(message);
+			queueMicrotask(() => options.onWarning?.(message));
 			return undefined;
 		}
 	};

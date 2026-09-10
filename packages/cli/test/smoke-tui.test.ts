@@ -103,9 +103,25 @@ function pingTool(): AgentTool {
 	};
 }
 
+const ESC = String.fromCharCode(27);
+
 function strip(writes: string[]): string {
-	const esc = String.fromCharCode(27);
-	return writes.join("").split(esc).join("");
+	return writes.join("").split(ESC).join("");
+}
+
+/** Split LineScreen output into painted rows and return their visible text. */
+function paintedRows(writes: string[]): string[] {
+	const rows: string[] = [];
+	for (const chunk of writes) {
+		for (const part of chunk.split(`${ESC}[`)) {
+			const row = part.replace(/^\d+;1H/u, "").replace(/^2K/u, "");
+			if (/^\?\d+[hl]/u.test(row) || /^[\d;]*m$/u.test(row) || row.length === 0) {
+				continue;
+			}
+			rows.push(row.replace(/[\d;]*m/gu, ""));
+		}
+	}
+	return rows;
 }
 
 describe("scripted TUI smoke", () => {
@@ -131,6 +147,11 @@ describe("scripted TUI smoke", () => {
 		expect(frame).toContain("ping");
 		expect(frame).toContain("AI");
 		expect(frame).toContain("READY");
+		const rows = paintedRows(io.writes);
+		expect(rows.length).toBeGreaterThan(0);
+		for (const row of rows) {
+			expect(row.length).toBeLessThanOrEqual(80);
+		}
 	});
 
 	it("denies a confirmation and leaves the editor draft intact", async () => {

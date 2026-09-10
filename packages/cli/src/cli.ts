@@ -285,14 +285,17 @@ async function main(): Promise<void> {
 
 	let agent!: Agent;
 	let input!: SkillInputCoordinator;
-	let usage = emptyUsage();
+	/** Usage of the latest assistant message: its input+output is the current context size. */
+	let contextUsage = emptyUsage();
+	/** Cumulative usage across the process for the status line. */
+	let totalUsage = emptyUsage();
 	const abort = new SigintAbort(() => agent);
 	const headerSegments = (): TuiHeaderSegment[] => {
 		const model = settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none";
 		return [
 			{ id: "cwd", text: `cwd: ${cwd}`, priority: 40 },
 			{ id: "model", text: `model: ${model}`, priority: 80 },
-			{ id: "ctx", text: `ctx: ${formatUsageOccupancy(usage, settings.contextWindow)}`, priority: 90 },
+			{ id: "ctx", text: `ctx: ${formatUsageOccupancy(contextUsage, settings.contextWindow)}`, priority: 90 },
 			{ id: "session", text: `session: ${session.header.id.slice(0, 12)}`, priority: 30 },
 			...host.segments.flatMap((segment) => {
 				const text = safeSegmentText(segment);
@@ -326,7 +329,14 @@ async function main(): Promise<void> {
 								id: "ctx",
 								order: 30,
 								priority: 90,
-								render: () => formatUsageOccupancy(usage, settings.contextWindow),
+								render: () => formatUsageOccupancy(contextUsage, settings.contextWindow),
+							},
+							{
+								id: "total",
+								order: 35,
+								priority: 45,
+								render: () =>
+									totalUsage.totalTokens > 0 ? `total ${formatUsageOccupancy(totalUsage)}` : undefined,
 							},
 							{
 								id: "skills",
@@ -342,7 +352,7 @@ async function main(): Promise<void> {
 				header: () => ({
 					cwd,
 					model: settings.hasModel ? (settings.alias ? `${settings.alias}(${settings.id})` : settings.id) : "none",
-					context: formatUsageOccupancy(usage, settings.contextWindow),
+					context: formatUsageOccupancy(contextUsage, settings.contextWindow),
 					session: session.header.id.slice(0, 12),
 					segments: headerSegments(),
 				}),
@@ -488,9 +498,13 @@ async function main(): Promise<void> {
 	host.bindAgent(agent);
 	agent.subscribe((event) => {
 		if (event.type === "message_end" && "role" in event.message && event.message.role === "assistant") {
-			usage = accumulateAssistantUsage(usage, event.message.usage);
+			contextUsage = event.message.usage;
+			totalUsage = accumulateAssistantUsage(totalUsage, event.message.usage);
 		}
 	});
+	const resetContextUsage = (): void => {
+		contextUsage = emptyUsage();
+	};
 	writeWarning = (message) => writeSkillStatus("warning", `[ext] ${message}`);
 	for (const warning of [...keymap.warnings, ...host.warnings]) {
 		writeWarning(warning);
@@ -509,6 +523,7 @@ async function main(): Promise<void> {
 			{ role: "user", content: [{ type: "text", text: summary }], timestamp: Date.now() },
 			...kept,
 		];
+		resetContextUsage();
 	};
 
 	const persist = async () => {
@@ -544,8 +559,9 @@ async function main(): Promise<void> {
 				process.exit(1);
 			}
 			await runPrint(agent, printInput.message, args.verbose);
-		} else if (printInput.kind === "builtin") {
-			console.error(`error: ${printInput.name} is only available in interactive mode`);
+		} else if (printInput.kind !== "handled") {
+			const name = printInput.kind === "builtin" ? printInput.name : `/${printInput.kind}`;
+			console.error(`error: ${name} is only available in interactive mode`);
 			await persist();
 			abort.detach();
 			process.exit(2);
@@ -577,12 +593,14 @@ async function main(): Promise<void> {
 			session = createSession(cwd);
 			await skillManager.setSession(session);
 			agent.reset();
+			resetContextUsage();
 		},
 		onReset: async () => {
 			resetSessionBranch(session);
 			await skillManager.setSession(session);
 			await skillManager.reset();
 			agent.reset();
+			resetContextUsage();
 		},
 		onCompact: async () => {
 			await compactNow();
@@ -604,6 +622,7 @@ async function main(): Promise<void> {
 			session = nodeId ? branch(loaded, nodeId) : loaded;
 			await skillManager.setSession(session);
 			await saveSession(session, sessionRoot);
+			resetContextUsage();
 			return messagesOnLeaf(session);
 		},
 		formatStatus: () =>

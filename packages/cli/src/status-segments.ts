@@ -59,6 +59,10 @@ export function accumulateAssistantUsage(usage: Usage | undefined, next: Usage |
 	};
 }
 
+/**
+ * `usage` is one assistant message's usage: its input + output tokens are the
+ * context size after that response. Pass cumulative usage only without a window.
+ */
 export function formatUsageOccupancy(usage: Usage, contextWindow?: number): string {
 	const used = usage.totalTokens > 0 ? usage.totalTokens : usage.input + usage.output;
 	if (contextWindow && contextWindow > 0) {

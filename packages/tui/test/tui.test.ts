@@ -6,6 +6,7 @@ import { parseInputChunk, parseKey } from "../src/keys.ts";
 import { renderFrame } from "../src/layout.ts";
 import { InteractiveTui } from "../src/session.ts";
 import { visibleWidth } from "../src/text.ts";
+import { availableInspectorViews, detailLines } from "../src/tool-detail.ts";
 
 describe("keys + editor + confirm", () => {
 	it("parses enter, editing keys, and alternate-enter", () => {
@@ -236,6 +237,56 @@ describe("renderFrame", () => {
 		expect(header).toContain("model: fast(gpt-4.1-mini)");
 		expect(header).toContain("ctx: 128k");
 		expect(header).toContain("session: branch-a");
+	});
+
+	it("drops low-priority header segments before the run state at 80 columns", () => {
+		const frame = renderFrame(
+			{
+				status: "model=fast",
+				header: {
+					cwd: "/very/long/working/directory/path/that/will/not/fit",
+					model: "fast(gpt-4.1-mini)",
+					session: "branch-a",
+					segments: [
+						{ id: "cwd", text: "cwd: /very/long/working/directory/path/that/will/not/fit", priority: 40 },
+						{ id: "model", text: "model: fast(gpt-4.1-mini)", priority: 80 },
+						{ id: "ctx", text: "ctx: 12k/128k 9%", priority: 90 },
+						{ id: "session", text: "session: branch-a", priority: 30 },
+						{ id: "ext", text: "ext: a-very-long-extension-status-segment", priority: 10 },
+					],
+				},
+				transcript: [],
+				editorLines: [""],
+				streaming: true,
+				colors: false,
+			},
+			80,
+			24,
+		).map(stripAnsi);
+		const header = frame[0] ?? "";
+		expect(visibleWidth(header)).toBeLessThanOrEqual(80);
+		expect(header).toContain("status: RUNNING");
+		expect(header).toContain("ctx: 12k/128k 9%");
+		expect(header).toContain("model: fast(gpt-4.1-mini)");
+		expect(header).not.toContain("a-very-long-extension");
+		expect(header).not.toContain("/very/long/working");
+	});
+
+	it("uses a tool renderer and falls back when it throws", () => {
+		const tool = {
+			toolCallId: "1",
+			toolName: "ping",
+			argsText: "{}",
+			state: "success" as const,
+			outputText: "pong",
+		};
+		expect(detailLines(tool, "output", () => ({ output: ["custom pong"] }))).toEqual(["custom pong"]);
+		expect(availableInspectorViews(tool, () => ({ diff: ["+ one"] }))).toEqual(["summary", "output", "diff"]);
+		expect(
+			detailLines(tool, "output", () => {
+				throw new Error("nope");
+			}),
+		).toEqual(["pong"]);
 	});
 
 	it("keeps shortcut hints complete at common terminal widths", () => {

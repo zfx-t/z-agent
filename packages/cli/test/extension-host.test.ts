@@ -93,14 +93,39 @@ describe("extension host", () => {
 		expect(host.tools.map((tool) => tool.name)).toEqual(["ping"]);
 		expect(host.extensionToolNames.has("ping")).toBe(true);
 		expect(host.segments[0]?.render()).toBe("ext-ok");
-		expect(
-			host.toolRenderer({
-				toolCallId: "1",
-				toolName: "ping",
-				argsText: "{}",
-				state: "success",
-			}),
-		).toBeUndefined();
-		expect(host.warnings.some((warning) => warning.includes("render-fail"))).toBe(true);
+		const snapshot = { toolCallId: "1", toolName: "ping", argsText: "{}", state: "success" as const };
+		expect(host.toolRenderer(snapshot)).toBeUndefined();
+		expect(host.warnings.filter((warning) => warning.includes("render-fail"))).toHaveLength(1);
+		expect(host.toolRenderer(snapshot)).toBeUndefined();
+		expect(host.warnings.filter((warning) => warning.includes("render-fail"))).toHaveLength(1);
+	});
+
+	it("does not re-enter the paint when a renderer fails during repaint", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "z-ext-host-"));
+		const path = await writeExt(
+			dir,
+			"paint.mjs",
+			`export function createExtension(api) {
+  api.registerToolRenderer("ping", () => { throw new Error("paint-fail"); });
+}
+`,
+		);
+		const registry = createRegistry(INTERACTIVE_COMMANDS);
+		let depth = 0;
+		let maxDepth = 0;
+		const host = createExtensionHost({
+			cwd: dir,
+			registry,
+			onWarning: () => {
+				depth += 1;
+				maxDepth = Math.max(maxDepth, depth);
+				host.toolRenderer({ toolCallId: "1", toolName: "ping", argsText: "{}", state: "success" });
+				depth -= 1;
+			},
+		});
+		await host.load(path);
+		host.toolRenderer({ toolCallId: "1", toolName: "ping", argsText: "{}", state: "success" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(maxDepth).toBe(1);
 	});
 });

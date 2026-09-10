@@ -125,6 +125,12 @@ export async function runInteractive(options: {
 			if (result?.kind === "request") {
 				return await promptAgent(options, result.message);
 			}
+			if (result?.kind === "exit") {
+				return "exit";
+			}
+			if (result?.kind === "reprocess") {
+				return await processLine(result.line);
+			}
 
 			let name: string | undefined;
 			let args = "";

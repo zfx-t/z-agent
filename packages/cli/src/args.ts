@@ -195,6 +195,7 @@ Env:
 
 Config:
   ~/.pillow/config.json   Model catalog (aliases, thinking, context)
+  ~/.pillow/keys.json     TUI key bindings (interrupt stays ctrl+c)
 `);
 }
 

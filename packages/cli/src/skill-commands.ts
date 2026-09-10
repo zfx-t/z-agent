@@ -11,7 +11,9 @@ export type SkillCommandLevel = CommandLevel;
 export type SkillInputResult =
 	| { kind: "handled"; error?: boolean }
 	| { kind: "request"; message: AgentMessage }
-	| { kind: "builtin"; name: string; args: string };
+	| { kind: "builtin"; name: string; args: string }
+	| { kind: "exit" }
+	| { kind: "reprocess"; line: string };
 
 export interface SkillInputCoordinatorOptions {
 	agent: Agent;
@@ -137,16 +139,17 @@ export class SkillInputCoordinator {
 			return { kind: "request", message: this.manager.createInvocationMessage(snapshot) };
 		}
 		const command = findCommand(this.commands, parsed.name);
-		if (command?.availableDuringRun) {
-			const result = await runCommand(command, this.context(), parsed.args);
-			if (result.kind === "request") {
-				return { kind: "request", message: result.message };
-			}
-			if (result.kind === "continue") {
-				return { kind: "handled", error: result.error };
-			}
+		if (!command?.availableDuringRun) {
+			return { kind: "builtin", name: parsed.name, args: parsed.args };
 		}
-		return { kind: "builtin", name: parsed.name, args: parsed.args };
+		const result = await runCommand(command, this.context(), parsed.args);
+		if (result.kind === "request") {
+			return { kind: "request", message: result.message };
+		}
+		if (result.kind === "continue") {
+			return { kind: "handled", error: result.error };
+		}
+		return result;
 	}
 }
 
