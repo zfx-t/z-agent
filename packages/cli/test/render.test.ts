@@ -47,6 +47,37 @@ describe("StreamRenderer", () => {
 		expect(bucket.out).toBe("Hello\n");
 	});
 
+	it("writes raw markdown text_delta bytes without rendering", () => {
+		const bucket = { out: "" };
+		const renderer = new StreamRenderer({
+			stdout: {
+				write: (chunk) => {
+					bucket.out += chunk;
+				},
+			},
+		});
+		const source = "# Title\n\nHello **bold** and [docs](https://example.com)";
+		const partial = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: source }],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-4.1-mini",
+			usage: emptyUsage(),
+			stopReason: "stop" as const,
+			timestamp: 1,
+		};
+		renderer.handle({
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: source, partial },
+		});
+		renderer.handle({ type: "message_end", message: partial });
+		expect(bucket.out).toBe(`${source}\n`);
+		expect(bucket.out).toContain("**bold**");
+		expect(bucket.out).toContain("[docs](https://example.com)");
+	});
+
 	it("prints compact tool start/end and hides lifecycle by default", () => {
 		const bucket = { out: "" };
 		const renderer = new StreamRenderer({

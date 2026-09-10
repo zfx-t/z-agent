@@ -1,4 +1,5 @@
 import { DEFAULT_COMPLETION_ROWS } from "./completion.ts";
+import { renderMarkdown } from "./markdown.ts";
 import type {
 	TuiCompletionState,
 	TuiFocus,
@@ -7,6 +8,7 @@ import type {
 	TuiToolSnapshot,
 	TuiTranscriptEntry,
 } from "./model.ts";
+import { clean, clip, color, padTo, type Tone, visibleWidth, wrap } from "./text.ts";
 import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
 export interface TuiPickerState {
@@ -36,22 +38,6 @@ export interface TuiFrameState {
 	/** Set false for a deliberately monochrome terminal. */
 	colors?: boolean;
 }
-
-type Tone = "accent" | "dim" | "error" | "info" | "muted" | "success" | "strong" | "warning";
-
-const ANSI: Record<Tone, string> = {
-	accent: "\x1b[38;5;45m",
-	dim: "\x1b[2m",
-	error: "\x1b[38;5;203m",
-	info: "\x1b[38;5;111m",
-	muted: "\x1b[38;5;245m",
-	success: "\x1b[38;5;78m",
-	strong: "\x1b[1m",
-	warning: "\x1b[38;5;221m",
-};
-const RESET = "\x1b[0m";
-const ESC = "\u001b";
-const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
 
 /** Render a stable terminal frame with a live editor and optional inspector. */
 export function renderFrame(state: TuiFrameState, width: number, height: number): string[] {
@@ -274,7 +260,7 @@ function transcriptLines(
 		if (selected) {
 			selectedLine = rendered.length;
 		}
-		rendered.push(...renderTranscriptEntry(entry, width, paint, selected));
+		rendered.push(...renderTranscriptEntry(entry, width, paint, selected, state.colors !== false));
 		if (state.inspector !== undefined && toolCallId !== undefined && state.inspector.tool.toolCallId === toolCallId) {
 			rendered.push(...inlineInspectorLines(state.inspector, width, height, paint));
 		}
@@ -323,14 +309,18 @@ function renderTranscriptEntry(
 	width: number,
 	paint: (tone: Tone, text: string) => string,
 	selected: boolean,
+	colors: boolean,
 ): string[] {
-	const presentation = transcriptPresentation(typeof entry === "string" ? legacyEntry(entry) : entry);
-	const timestamp =
-		typeof entry === "string" || entry.createdAt === undefined ? "" : `${formatTime(entry.createdAt)} `;
+	const resolved = typeof entry === "string" ? legacyEntry(entry) : entry;
+	const presentation = transcriptPresentation(resolved);
+	const timestamp = resolved.createdAt === undefined ? "" : `${formatTime(resolved.createdAt)} `;
 	const prefix = `${selected ? ">" : " "}${timestamp}${presentation.label} `;
 	const continuation = " ".repeat(visibleWidth(prefix));
 	const bodyWidth = Math.max(1, width - visibleWidth(prefix));
-	const wrapped = wrap(clean(presentation.text), bodyWidth);
+	const wrapped =
+		resolved.kind === "assistant"
+			? renderMarkdown(resolved.text, bodyWidth, { colors })
+			: wrap(clean(presentation.text), bodyWidth);
 	return wrapped.map((part, index) => {
 		const marker = index === 0 ? prefix : continuation;
 		return `${paint(selected ? "accent" : presentation.tone, marker)}${part}`;
@@ -424,75 +414,4 @@ function fitLines(lines: string[], height: number): string[] {
 		result.unshift("");
 	}
 	return result;
-}
-
-function padTo(text: string, width: number): string {
-	const clipped = clip(text, width);
-	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
-}
-
-function color(enabled: boolean, tone: Tone, text: string): string {
-	return enabled ? `${ANSI[tone]}${text}${RESET}` : text;
-}
-
-function clean(text: string): string {
-	return removeControls(text.replace(ANSI_PATTERN, "")).replace(/\t/g, "  ");
-}
-
-function removeControls(text: string): string {
-	return Array.from(text)
-		.filter((char) => {
-			const code = char.codePointAt(0) ?? 0;
-			return code === 0x0a || code === 0x09 || (code >= 0x20 && code !== 0x7f);
-		})
-		.join("");
-}
-
-function wrap(text: string, width: number): string[] {
-	const parts = text.split("\n");
-	const lines: string[] = [];
-	for (const part of parts) {
-		if (part.length === 0) {
-			lines.push("");
-			continue;
-		}
-		let current = "";
-		let currentWidth = 0;
-		for (const char of Array.from(part)) {
-			const charWidth = cellWidth(char);
-			if (currentWidth > 0 && currentWidth + charWidth > width) {
-				lines.push(current);
-				current = "";
-				currentWidth = 0;
-			}
-			current += char;
-			currentWidth += charWidth;
-		}
-		lines.push(current);
-	}
-	return lines.length > 0 ? lines : [""];
-}
-
-function clip(text: string, width: number): string {
-	if (visibleWidth(text) <= width) {
-		return text;
-	}
-	const plain = clean(text);
-	if (width <= 3) {
-		return wrap(plain, Math.max(1, width))[0] ?? "";
-	}
-	const clipped = wrap(plain, Math.max(1, width - 3))[0] ?? "";
-	return `${clipped}...`;
-}
-
-function visibleWidth(text: string): number {
-	return Array.from(text.replace(ANSI_PATTERN, "")).reduce((total, char) => total + cellWidth(char), 0);
-}
-
-function cellWidth(char: string): number {
-	const code = char.codePointAt(0) ?? 0;
-	if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || (code >= 0x300 && code <= 0x36f)) {
-		return 0;
-	}
-	return code >= 0x1100 && (code <= 0x115f || code >= 0x2e80) ? 2 : 1;
 }

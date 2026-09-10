@@ -5,6 +5,7 @@ import { EditorBuffer } from "../src/editor.ts";
 import { parseInputChunk, parseKey } from "../src/keys.ts";
 import { renderFrame } from "../src/layout.ts";
 import { InteractiveTui } from "../src/session.ts";
+import { visibleWidth } from "../src/text.ts";
 
 describe("keys + editor + confirm", () => {
 	it("parses enter, editing keys, and alternate-enter", () => {
@@ -423,6 +424,104 @@ describe("renderFrame", () => {
 		expect(cycledFrame).toContain("> /command-8");
 		expect(cycledFrame).not.toContain("/command-0");
 	});
+
+	it("renders assistant markdown while leaving user text literal", () => {
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [
+					{ id: "user", kind: "user", text: "use **bold**" },
+					{
+						id: "assistant",
+						kind: "assistant",
+						text: "# Done\n\nUse `renderMarkdown` and [docs](https://example.com).",
+					},
+				],
+				editorLines: [""],
+				streaming: false,
+				colors: false,
+			},
+			72,
+			16,
+		).map(stripAnsi);
+		const text = frame.join("\n");
+		expect(text).toContain("YOU use **bold**");
+		expect(text).toContain("# Done");
+		expect(text).toContain("Use `renderMarkdown` and docs (https://example.com).");
+		expect(text).not.toContain("[docs](https://example.com)");
+		for (const line of frame) {
+			expect(line.length).toBeLessThanOrEqual(72);
+		}
+	});
+
+	it("leaves thinking, tool, and inspector rows as literal markdown source", () => {
+		const tool = {
+			toolCallId: "call-md",
+			toolName: "bash",
+			argsText: '{"command":"**star**"}',
+			state: "success" as const,
+			outputText: "# Title\n\nHello **bold**",
+		};
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [
+					{ id: "think", kind: "thinking", text: "plan **secret** and `x`" },
+					{ id: "tool", kind: "tool", text: "# ignored heading", tool },
+				],
+				editorLines: [""],
+				streaming: false,
+				colors: false,
+				inspector: { tool, view: "output" },
+			},
+			72,
+			20,
+		).map(stripAnsi);
+		const text = frame.join("\n");
+		expect(text).toContain("THINK plan **secret** and `x`");
+		expect(text).toContain('TOOL bash {"command":"**star**"}');
+		expect(text).toContain("# Title");
+		expect(text).toContain("Hello **bold**");
+		expect(text).not.toContain("plan secret");
+		expect(text).not.toContain("Hello bold");
+	});
+
+	it("keeps 80x24 assistant markdown inside the viewport", () => {
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [
+					{
+						id: "assistant",
+						kind: "assistant",
+						text: "```js\nconsole.log('abcdefghijklmnopqrstuvwxyz0123456789');\n```",
+					},
+				],
+				editorLines: ["|"],
+				streaming: true,
+				colors: false,
+			},
+			80,
+			24,
+		).map(stripAnsi);
+		expect(frame).toHaveLength(24);
+		expect(frame.join("\n")).toContain("```js");
+		const rawCode = "console.log('abcdefghijklmnopqrstuvwxyz0123456789');";
+		const bodyWidth = 80 - visibleWidth(" AI  ");
+		const codeBodies = frame.map((line) => line.replace(/^\s*AI\s+/, ""));
+		expect(visibleWidth(rawCode)).toBeGreaterThan(40);
+		expect(codeBodies.some((line) => line.includes("console.log"))).toBe(true);
+		expect(codeBodies.some((line) => line.includes("abcdefghijklmnopqrstuvwxyz0123456789"))).toBe(true);
+		for (const line of codeBodies) {
+			if (!/console|abcdefghijklmnopqrstuvwxyz|0123456789/u.test(line)) {
+				continue;
+			}
+			expect(visibleWidth(line)).toBeLessThanOrEqual(bodyWidth);
+		}
+		for (const line of frame) {
+			expect(line.length).toBeLessThanOrEqual(80);
+		}
+	});
 });
 
 describe("InteractiveTui", () => {
@@ -693,6 +792,28 @@ describe("InteractiveTui", () => {
 		tui.pushKey({ type: "pageDown" }); // scroll forward
 		tui.pushKey({ type: "end" }); // back to the latest content
 		expect(lastFrame()).toContain("old message 39");
+		tui.close();
+	});
+
+	it("re-renders streamed assistant markdown in place", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 60,
+			rows: 16,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		tui.appendAssistantDelta("# Hel");
+		tui.appendAssistantDelta("lo\n\n**ok**");
+		const frame = stripAnsi(writes[writes.length - 1] ?? "");
+		expect(frame).toContain("# Hello");
+		expect(frame).toContain("ok");
+		expect(frame).not.toContain("**ok**");
+		expect((frame.match(/# Hello/g) ?? []).length).toBe(1);
 		tui.close();
 	});
 });

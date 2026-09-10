@@ -106,6 +106,10 @@ EventStream wrappers around `runAgentLoop` / `runAgentLoopContinue`. Completing 
 
 `@z-agent/cli` + `@z-agent/tui`. Tools live in `@z-agent/agent`. Path jail and bash/write/edit confirm are stricter than pi. (ADR-0016)
 
+## Assistant Markdown
+
+TUI-only presentation of `assistant` transcript text. `@z-agent/tui` lexes GFM with `marked` and paints Quiet Console markers. The stored message text stays raw Markdown. Print mode does not render Markdown. (ADR-0023)
+
 ## thinkingSignature
 
 JSON string of a Responses reasoning item, replayed on later turns. (ADR-0017)

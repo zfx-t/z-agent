@@ -31,6 +31,7 @@ The shipped TUI already provides:
 - multiline editor, prompt history, and bracketed-paste placeholders;
 - live input while an agent run is active;
 - streaming assistant text and foldable thinking;
+- GFM rendering for assistant transcript entries (headings, lists, fences, links, tables) with monochrome markers
 - keyboard-selected inline tool details, confirmation prompt, and session picker;
 - terminal-width-aware wrapping and monochrome fallback.
 
@@ -258,6 +259,16 @@ Acceptance:
 - focus, selection, and modal states are visible at low color depth;
 - 80x24 remains usable without horizontal scrolling;
 - wrapping preserves full-width Unicode correctness.
+
+### R7: Assistant Markdown (this slice)
+
+Acceptance:
+
+- assistant rows render GFM without horizontal scroll at 80x24;
+- user/thinking/tool rows remain literal;
+- `NO_COLOR` keeps `#`, list markers, fences, and link hrefs;
+- untrusted CSI/HTML cannot style or execute;
+- streaming updates replace the AI body in place (no duplicated `# Hello`).
 
 ## Implementation Boundaries
 

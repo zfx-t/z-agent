@@ -11,12 +11,18 @@
 		},
 		"./package.json": "./package.json"
 	},
-	"files": ["src", "README.md"],
+	"files": [
+		"src",
+		"README.md"
+	],
 	"scripts": {
 		"test": "vitest --run"
 	},
 	"engines": {
 		"node": ">=22.0.0"
 	},
-	"license": "MIT"
+	"license": "MIT",
+	"dependencies": {
+		"marked": "18.0.11"
+	}
 }

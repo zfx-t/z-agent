@@ -2,6 +2,10 @@
 
 Clean-room terminal UI for the z-agent coding CLI. No pi-tui, no Ink, no native addons.
 
+Assistant transcript text is GitHub-Flavored Markdown: headings, emphasis, lists,
+fenced code, links, and tables. User input, thinking, and tool rows stay literal.
+`NO_COLOR` keeps the same markers without SGR. Print mode is not Markdown-aware.
+
 The workspace uses structured transcript entries, in-place tool lifecycle
 updates, a keyboard-selected inline tool inspector, and an editor that remains
 active during a run. Bracketed pasted text and image attachments render as
