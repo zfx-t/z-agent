@@ -23,6 +23,7 @@
 | [0021](0021-l5-jsonl-harness.md) | L5 JSONL harness | Accepted |
 | [0022](0022-pillow-home.md) | Pillow home and user config | Accepted |
 | [0023](0023-tui-markdown.md) | Assistant Markdown via marked lexer | Accepted |
+| [0024](0024-session-checkpoints.md) | Session checkpoints | Accepted |
 
 ## Format
 

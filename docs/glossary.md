@@ -130,6 +130,10 @@ Live inspect/edit surface for the resolved catalog model: `contextWindow`, `maxT
 
 Append-only JSONL nodes with `id`/`parentId` under `~/.pillow/sessions`. Product persistence, not L5. (ADR-0016, ADR-0022)
 
+## Checkpoint
+
+A restore-able session node. Restoring sets `leafId` via `branch()`; sibling nodes stay on disk and never enter `messagesOnLeaf`. Malformed graphs (`cycle`, missing parent/leaf, duplicate id) are refused. (ADR-0024)
+
 ## Compaction
 
 When estimated tokens exceed `contextWindow - reserve`, or the last assistant `stopReason` is `length`, older leaf messages are summarized (via the existing `StreamFn`) and replaced by a summary plus a recent tail. (ADR-0016)

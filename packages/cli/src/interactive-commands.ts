@@ -9,7 +9,7 @@ export const INTERACTIVE_COMMANDS: readonly InteractiveCommand[] = [
 	{ name: "/reset", description: "Reset agent context" },
 	{ name: "/clear", description: "Clear visible transcript" },
 	{ name: "/compact", description: "Compact the active context" },
-	{ name: "/sessions", description: "Browse and resume saved sessions" },
+	{ name: "/sessions", description: "Browse sessions and restore a checkpoint" },
 	{ name: "/status", description: "Show runtime status" },
 	{ name: "/model", description: "Show or set model context and parameters" },
 	{ name: "/commands", description: "Browse available commands" },

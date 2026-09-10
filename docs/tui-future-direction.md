@@ -225,7 +225,7 @@ Acceptance:
 - confirmation decisions remain accessible without a mouse;
 - narrow terminals preserve a full-width transcript and live editor.
 
-### R4: Session tree and checkpoints
+### R4: Session tree and checkpoints (checkpoint restore implemented)
 
 Upgrade the session picker into a branch-aware history view. Support restoring
 an earlier node and creating a new active branch from it.
@@ -236,6 +236,10 @@ Acceptance:
 - session loading never silently merges unrelated branches;
 - malformed history produces a local error state rather than a corrupted
   transcript.
+
+Shipped in this cut: second picker of checkpoints (live path, leaf, off-path
+siblings) plus `inspectSession` refusal of cycles and broken parent links.
+Visual tree chrome beyond picker rows remains later.
 
 ### R5: Commands, status, and extension surface
 

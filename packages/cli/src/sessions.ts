@@ -173,11 +173,177 @@ export function branch(session: SessionRecord, nodeId: string): SessionRecord {
 	return { ...session, leafId: nodeId };
 }
 
+export type SessionHealthReason = "duplicate_id" | "missing_leaf" | "missing_parent" | "cycle";
+
+export type SessionHealth = { ok: true } | { ok: false; reason: SessionHealthReason; detail: string };
+
+export interface SessionCheckpoint {
+	id: string;
+	label: string;
+	depth: number;
+	onLivePath: boolean;
+	isLeaf: boolean;
+}
+
+export type SessionInspectResult =
+	| { ok: true; checkpoints: SessionCheckpoint[] }
+	| { ok: false; reason: SessionHealthReason; detail: string };
+
+export function inspectSession(session: SessionRecord): SessionHealth {
+	const ids = new Set<string>();
+	for (const node of session.nodes) {
+		if (ids.has(node.id)) {
+			return { ok: false, reason: "duplicate_id", detail: node.id };
+		}
+		ids.add(node.id);
+	}
+	if (session.leafId && !ids.has(session.leafId)) {
+		return { ok: false, reason: "missing_leaf", detail: session.leafId };
+	}
+	const byId = new Map(session.nodes.map((node) => [node.id, node]));
+	for (const node of session.nodes) {
+		if (node.parentId && !ids.has(node.parentId)) {
+			return { ok: false, reason: "missing_parent", detail: node.id };
+		}
+	}
+	for (const node of session.nodes) {
+		const seen = new Set<string>();
+		let current: SessionNode | undefined = node;
+		while (current) {
+			if (seen.has(current.id)) {
+				return { ok: false, reason: "cycle", detail: current.id };
+			}
+			seen.add(current.id);
+			current = current.parentId ? byId.get(current.parentId) : undefined;
+		}
+	}
+	return { ok: true };
+}
+
+export function formatSessionHealth(health: Extract<SessionHealth, { ok: false }>): string {
+	return `malformed session (${health.reason}): ${health.detail}`;
+}
+
+export function inspectSessionCheckpoints(session: SessionRecord): SessionInspectResult {
+	const health = inspectSession(session);
+	if (!health.ok) {
+		return health;
+	}
+	return { ok: true, checkpoints: listCheckpoints(session) };
+}
+
+export function listCheckpoints(session: SessionRecord): SessionCheckpoint[] {
+	if (!inspectSession(session).ok) {
+		return [];
+	}
+	const byParent = new Map<string | null, SessionNode[]>();
+	for (const node of session.nodes) {
+		const list = byParent.get(node.parentId) ?? [];
+		list.push(node);
+		byParent.set(node.parentId, list);
+	}
+	const live = new Set(rootToLeaf(session).map((node) => node.id));
+	const checkpoints: SessionCheckpoint[] = [];
+	const visit = (node: SessionNode, depth: number): void => {
+		checkpoints.push({
+			id: node.id,
+			label: checkpointLabel(node),
+			depth,
+			onLivePath: live.has(node.id),
+			isLeaf: session.leafId === node.id,
+		});
+		for (const child of byParent.get(node.id) ?? []) {
+			visit(child, depth + 1);
+		}
+	};
+	for (const root of byParent.get(null) ?? []) {
+		visit(root, 0);
+	}
+	return checkpoints;
+}
+
+export function formatCheckpointRow(checkpoint: SessionCheckpoint): string {
+	const flag = checkpoint.isLeaf ? "*" : checkpoint.onLivePath ? "+" : ".";
+	return `${flag} ${"  ".repeat(checkpoint.depth)}${checkpoint.label}`;
+}
+
+function checkpointLabel(node: SessionNode): string {
+	if (node.type === "message") {
+		const role = "role" in node.message ? String(node.message.role) : "message";
+		const text = snippet(agentMessageText(node.message));
+		return text.length > 0 ? `${role}: ${text}` : role;
+	}
+	if (node.type === "compaction") {
+		const text = snippet(node.summary);
+		return text.length > 0 ? `compact: ${text}` : "compact";
+	}
+	if (node.type === "label") {
+		return node.label && node.label.length > 0 ? `label: ${snippet(node.label)}` : `label: ${node.id}`;
+	}
+	if (node.type === "skill_activation") {
+		return `skill +${node.skillName}`;
+	}
+	if (node.type === "skill_deactivation") {
+		return `skill -${node.skillName}`;
+	}
+	return `skills mode ${node.mode}`;
+}
+
+function agentMessageText(message: AgentMessage): string {
+	if (!("role" in message)) {
+		return "";
+	}
+	if (message.role === "user") {
+		return contentText(message.content);
+	}
+	if (message.role === "assistant") {
+		return contentText(message.content);
+	}
+	if (message.role === "toolResult") {
+		return message.toolName;
+	}
+	return "";
+}
+
+function contentText(content: unknown): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				typeof block === "object" &&
+				block !== null &&
+				"type" in block &&
+				block.type === "text" &&
+				"text" in block &&
+				typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("");
+}
+
+function snippet(text: string, max = 48): string {
+	const one = text.replace(/\s+/g, " ").trim();
+	if (one.length <= max) {
+		return one;
+	}
+	return `${one.slice(0, Math.max(1, max - 3))}...`;
+}
+
 export function rootToLeaf(session: SessionRecord): SessionNode[] {
 	const byId = new Map(session.nodes.map((node) => [node.id, node]));
 	const path: SessionNode[] = [];
+	const seen = new Set<string>();
 	let current = session.leafId ? byId.get(session.leafId) : undefined;
 	while (current) {
+		if (seen.has(current.id)) {
+			break;
+		}
+		seen.add(current.id);
 		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}

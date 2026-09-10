@@ -140,4 +140,135 @@ describe("interactive TUI adaptation", () => {
 		expect(prompt).not.toHaveBeenCalled();
 		expect(tui.close).toHaveBeenCalledOnce();
 	});
+
+	it("restores a checkpoint through the second picker and clears the transcript", async () => {
+		const prompts = ["/sessions", "/exit"];
+		let promptIndex = 0;
+		const picks = [0, 1];
+		let pickIndex = 0;
+		const pickTitles: string[] = [];
+		const lines: string[] = [];
+		const reset = vi.fn();
+		const agent = {
+			prompt: vi.fn(),
+			subscribe: () => () => {},
+			reset,
+			state: { messages: [] as unknown[] },
+		} as unknown as Agent;
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			appendLine: (line: string) => {
+				lines.push(line);
+			},
+			appendNotice: vi.fn(),
+			clearTranscript: vi.fn(),
+			readPrompt: async () => prompts[promptIndex++] ?? null,
+			pickFromList: async (title: string) => {
+				pickTitles.push(title);
+				return picks[pickIndex++] ?? -1;
+			},
+		} as unknown as InteractiveTui;
+
+		await runInteractive({
+			agent,
+			tui,
+			listSessions: async () => ["sess-1"],
+			onInspectSession: async () => ({
+				ok: true,
+				checkpoints: [
+					{ id: "n1", label: "user: a", depth: 0, onLivePath: true, isLeaf: false },
+					{ id: "n2", label: "user: b", depth: 1, onLivePath: true, isLeaf: true },
+				],
+			}),
+			onRestoreCheckpoint: async (sessionId, nodeId) => {
+				expect(sessionId).toBe("sess-1");
+				expect(nodeId).toBe("n2");
+				return [{ role: "user", content: [{ type: "text", text: "b" }], timestamp: 1 }];
+			},
+		});
+
+		expect(pickTitles).toEqual(["Resume session", "Restore checkpoint"]);
+		expect(reset).toHaveBeenCalledOnce();
+		expect(agent.state.messages).toEqual([{ role: "user", content: [{ type: "text", text: "b" }], timestamp: 1 }]);
+		expect(tui.clearTranscript).toHaveBeenCalledOnce();
+		expect(lines.some((line) => line.includes("restored sess-1") && line.includes("user: b"))).toBe(true);
+		expect(agent.prompt).not.toHaveBeenCalled();
+	});
+
+	it("refuses a malformed session without resetting the agent", async () => {
+		const prompts = ["/sessions", "/exit"];
+		let promptIndex = 0;
+		const reset = vi.fn();
+		const notices: Array<[string, string]> = [];
+		const agent = {
+			prompt: vi.fn(),
+			subscribe: () => () => {},
+			reset,
+			state: { messages: [{ keep: true }] },
+		} as unknown as Agent;
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			appendLine: vi.fn(),
+			appendNotice: (kind: string, message: string) => {
+				notices.push([kind, message]);
+			},
+			clearTranscript: vi.fn(),
+			readPrompt: async () => prompts[promptIndex++] ?? null,
+			pickFromList: async () => 0,
+		} as unknown as InteractiveTui;
+		const restore = vi.fn();
+
+		await runInteractive({
+			agent,
+			tui,
+			listSessions: async () => ["broken"],
+			onInspectSession: async () => ({ ok: false, reason: "cycle", detail: "n1" }),
+			onRestoreCheckpoint: restore,
+		});
+
+		expect(notices).toEqual([["error", "[sessions] malformed session (cycle): n1"]]);
+		expect(restore).not.toHaveBeenCalled();
+		expect(reset).not.toHaveBeenCalled();
+		expect(tui.clearTranscript).not.toHaveBeenCalled();
+	});
+
+	it("cancels checkpoint restore without loading a session", async () => {
+		const prompts = ["/sessions", "/exit"];
+		let promptIndex = 0;
+		const picks = [0, -1];
+		let pickIndex = 0;
+		const reset = vi.fn();
+		const restore = vi.fn();
+		const agent = {
+			prompt: vi.fn(),
+			subscribe: () => () => {},
+			reset,
+			state: {},
+		} as unknown as Agent;
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			appendLine: vi.fn(),
+			appendNotice: vi.fn(),
+			clearTranscript: vi.fn(),
+			readPrompt: async () => prompts[promptIndex++] ?? null,
+			pickFromList: async () => picks[pickIndex++] ?? -1,
+		} as unknown as InteractiveTui;
+
+		await runInteractive({
+			agent,
+			tui,
+			listSessions: async () => ["sess-1"],
+			onInspectSession: async () => ({
+				ok: true,
+				checkpoints: [{ id: "n1", label: "user: a", depth: 0, onLivePath: true, isLeaf: true }],
+			}),
+			onRestoreCheckpoint: restore,
+		});
+
+		expect(restore).not.toHaveBeenCalled();
+		expect(reset).not.toHaveBeenCalled();
+	});
 });

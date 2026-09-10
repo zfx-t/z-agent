@@ -78,7 +78,8 @@ bypasses confirmation, or changes the path jail.
 
 Built-ins include `/exit`, `/new`, `/reset`, `/clear`, `/compact`, `/sessions`
 (`/resume`), `/status`, `/model`, `/commands`, `/skills`, `/skill`, and `/reload`.
-`/status` includes thinking, context window, max tokens, and persist mode. The
+`/sessions` lists saved files then restores a checkpoint (`branch()`); malformed
+JSONL is refused. `/status` includes thinking, context window, max tokens, and persist mode. The
 TUI session picker runs at start when sessions already exist for the cwd.
 
 The TUI keeps its multiline editor available while the agent is working.

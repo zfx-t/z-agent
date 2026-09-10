@@ -34,7 +34,12 @@ import { prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
 import { runPrint } from "./print.ts";
 import {
 	appendMessage,
+	branch,
 	createSession,
+	formatCheckpointRow,
+	formatSessionHealth,
+	inspectSession,
+	inspectSessionCheckpoints,
 	latestSessionId,
 	listSessionIds,
 	loadSession,
@@ -62,6 +67,38 @@ function syncSession(session: SessionRecord, messages: AgentMessage[]): void {
 	for (const message of persistable.slice(have)) {
 		appendMessage(session, message);
 	}
+}
+
+async function openHealthySession(cwd: string, id: string, root: string | undefined): Promise<SessionRecord> {
+	const loaded = await loadSession(cwd, id, root);
+	const health = inspectSession(loaded);
+	if (health.ok) {
+		return loaded;
+	}
+	console.error(`[sessions] ${formatSessionHealth(health)}`);
+	return createSession(cwd);
+}
+
+async function pickCheckpointSession(tui: InteractiveTui, loaded: SessionRecord): Promise<SessionRecord | undefined> {
+	const inspect = inspectSessionCheckpoints(loaded);
+	if (!inspect.ok) {
+		tui.appendNotice("error", `[sessions] ${formatSessionHealth(inspect)}`);
+		return undefined;
+	}
+	if (inspect.checkpoints.length === 0) {
+		return loaded;
+	}
+	const pick = await tui.pickFromList("Restore checkpoint", inspect.checkpoints.map(formatCheckpointRow), {
+		cancelValue: -1,
+	});
+	if (pick < 0) {
+		return undefined;
+	}
+	const checkpoint = inspect.checkpoints[pick];
+	if (!checkpoint) {
+		return undefined;
+	}
+	return branch(loaded, checkpoint.id);
 }
 
 function completionCandidates(skillManager: Awaited<ReturnType<typeof createSkillManager>>): TuiCompletionCandidate[] {
@@ -180,10 +217,10 @@ async function main(): Promise<void> {
 	const sessionRoot = args.sessionDir;
 	let session: SessionRecord;
 	if (args.session) {
-		session = await loadSession(cwd, args.session, sessionRoot);
+		session = await openHealthySession(cwd, args.session, sessionRoot);
 	} else if (args.resume || args.continueSession) {
 		const id = await latestSessionId(cwd, sessionRoot);
-		session = id ? await loadSession(cwd, id, sessionRoot) : createSession(cwd);
+		session = id ? await openHealthySession(cwd, id, sessionRoot) : createSession(cwd);
 	} else {
 		session = createSession(cwd);
 	}
@@ -267,8 +304,12 @@ async function main(): Promise<void> {
 			tui.start();
 			const index = await tui.pickFromList("Sessions", ["(new session)", ...ids], { cancelValue: 0 });
 			if (index > 0) {
-				session = await loadSession(cwd, ids[index - 1], sessionRoot);
-				await skillManager.setSession(session);
+				const loaded = await loadSession(cwd, ids[index - 1] ?? "", sessionRoot);
+				const picked = await pickCheckpointSession(tui, loaded);
+				if (picked) {
+					session = picked;
+					await skillManager.setSession(session);
+				}
 			}
 		}
 	}
@@ -476,12 +517,21 @@ async function main(): Promise<void> {
 			await saveSession(session, sessionRoot);
 		},
 		listSessions: async () => await listSessionIds(cwd, sessionRoot),
-		onLoadSession: async (id) => {
+		onInspectSession: async (id) => {
+			const loaded = await loadSession(cwd, id, sessionRoot);
+			return inspectSessionCheckpoints(loaded);
+		},
+		onRestoreCheckpoint: async (id, nodeId) => {
 			await persist();
-			session = await loadSession(cwd, id, sessionRoot);
+			const loaded = await loadSession(cwd, id, sessionRoot);
+			const health = inspectSession(loaded);
+			if (!health.ok) {
+				throw new Error(formatSessionHealth(health));
+			}
+			session = nodeId ? branch(loaded, nodeId) : loaded;
 			await skillManager.setSession(session);
-			const messages = messagesOnLeaf(session);
-			return messages;
+			await saveSession(session, sessionRoot);
+			return messagesOnLeaf(session);
 		},
 		formatStatus: () =>
 			formatRuntimeStatus({

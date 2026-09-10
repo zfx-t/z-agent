@@ -1,6 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentToolResult } from "@z-agent/agent";
 import type { InteractiveTui } from "@z-agent/tui";
 import { commandMenuItems, INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
+import { formatCheckpointRow, formatSessionHealth, type SessionInspectResult } from "./sessions.ts";
 import type { SkillInputCoordinator } from "./skill-commands.ts";
 
 const TOOL_RESULT_PREVIEW_CHARS = 720;
@@ -84,6 +85,8 @@ export async function runInteractive(options: {
 	onCompact?: () => Promise<void>;
 	listSessions?: () => Promise<string[]>;
 	onLoadSession?: (id: string) => Promise<AgentMessage[]>;
+	onInspectSession?: (id: string) => Promise<SessionInspectResult>;
+	onRestoreCheckpoint?: (sessionId: string, nodeId: string | undefined) => Promise<AgentMessage[]>;
 	formatStatus?: () => string;
 	onModel?: (args: string) => Promise<void> | void;
 }): Promise<void> {
@@ -176,13 +179,55 @@ export async function runInteractive(options: {
 					return "continue";
 				}
 				const index = await options.tui.pickFromList("Resume session", ids, { cancelValue: -1 });
-				if (index < 0 || !options.onLoadSession) {
+				if (index < 0) {
 					return "continue";
 				}
-				const messages = await options.onLoadSession(ids[index]);
+				const sessionId = ids[index];
+				if (!sessionId) {
+					return "continue";
+				}
+				if (options.onInspectSession && options.onRestoreCheckpoint) {
+					const inspect = await options.onInspectSession(sessionId);
+					if (!inspect.ok) {
+						options.tui.appendNotice("error", `[sessions] ${formatSessionHealth(inspect)}`);
+						return "continue";
+					}
+					let nodeId: string | undefined;
+					let restoredLabel = "leaf";
+					if (inspect.checkpoints.length > 0) {
+						const pick = await options.tui.pickFromList(
+							"Restore checkpoint",
+							inspect.checkpoints.map(formatCheckpointRow),
+							{ cancelValue: -1 },
+						);
+						if (pick < 0) {
+							return "continue";
+						}
+						const checkpoint = inspect.checkpoints[pick];
+						if (!checkpoint) {
+							return "continue";
+						}
+						nodeId = checkpoint.id;
+						restoredLabel = formatCheckpointRow(checkpoint);
+					}
+					try {
+						const messages = await options.onRestoreCheckpoint(sessionId, nodeId);
+						options.agent.reset();
+						options.agent.state.messages = messages;
+						options.tui.clearTranscript();
+						options.tui.appendLine(`[sessions] restored ${sessionId} at ${restoredLabel}`);
+					} catch (error) {
+						options.tui.appendNotice("error", error instanceof Error ? error.message : String(error));
+					}
+					return "continue";
+				}
+				if (!options.onLoadSession) {
+					return "continue";
+				}
+				const messages = await options.onLoadSession(sessionId);
 				options.agent.reset();
 				options.agent.state.messages = messages;
-				options.tui.appendLine(`[sessions] loaded ${ids[index]}`);
+				options.tui.appendLine(`[sessions] loaded ${sessionId}`);
 				return "continue";
 			}
 			if (options.hasModel === false) {

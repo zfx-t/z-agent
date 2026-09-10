@@ -43,10 +43,14 @@ SQLite backend TBD (separate ADR).
 - Constrained `skill_read`, immutable provider snapshots, and TUI slash completion
 - Skills available without project trust; executable extensions remain trust-gated
 
-## Phase 2.8 — Model settings inspect and edit
+## Phase 2.8 — Model settings inspect and edit (done)
 
 `/status` and `/model` show `contextWindow`, `maxTokens`, and `thinking`. Alias-backed edits persist to `~/.pillow/config.json`. `--context-window` / `--max-tokens` and matching env vars complete ADR-0022 numeric precedence.
 
 ## Phase 2.9 — TUI assistant Markdown (done)
 
 Interactive assistant rows render GFM (headings, emphasis, lists, fences, links, tables) through `marked` lexer + first-party painter. Print mode stays raw. (ADR-0023)
+
+## Phase 2.10 — Session checkpoints (R4 first cut)
+
+`/sessions` and the startup picker restore a node through `branch()`. Malformed JSONL is refused instead of truncated. Tree chrome beyond picker rows is later. (ADR-0024)
