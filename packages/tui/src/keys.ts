@@ -13,6 +13,11 @@ export type Key =
 	| { type: "pageDown" }
 	| { type: "newline" }
 	| { type: "ctrl"; value: string }
+	| { type: "wordLeft" }
+	| { type: "wordRight" }
+	| { type: "deleteWordForward" }
+	| { type: "deleteWordBack" }
+	| { type: "report" }
 	| { type: "up" }
 	| { type: "down" }
 	| { type: "left" }
@@ -20,13 +25,23 @@ export type Key =
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
+const ESC = "\u001b";
+const DSR_REPORT = new RegExp(`^${ESC}\\[\\d+;\\d+R`);
+const DSR_PARTIAL = new RegExp(`^${ESC}\\[\\d*(;\\d*)?$`);
 const ESCAPE_SEQUENCES = [
 	"\x1b[13;2u",
 	"\x1b[27;2;13~",
+	"\x1b[3;5~",
 	"\x1b[3~",
 	"\x1b[5~",
 	"\x1b[6~",
 	"\x1b[Z",
+	"\x1b[1;5A",
+	"\x1b[1;5B",
+	"\x1b[1;5C",
+	"\x1b[1;5D",
+	"\x1b[1;3C",
+	"\x1b[1;3D",
 	"\x1b[A",
 	"\x1b[B",
 	"\x1b[C",
@@ -35,6 +50,7 @@ const ESCAPE_SEQUENCES = [
 	"\x1b[F",
 	"\x1bOH",
 	"\x1bOF",
+	"\x1b\x7f",
 	"\x1b\r",
 	"\x1b\n",
 ] as const;
@@ -91,6 +107,24 @@ export function parseKey(input: string): Key | undefined {
 	if (input === "\x1b[F" || input === "\x1bOF") {
 		return { type: "end" };
 	}
+	if (input === "\x1b[1;5D" || input === "\x1b[1;3D") {
+		return { type: "wordLeft" };
+	}
+	if (input === "\x1b[1;5C" || input === "\x1b[1;3C") {
+		return { type: "wordRight" };
+	}
+	if (input === "\x1b[3;5~") {
+		return { type: "deleteWordForward" };
+	}
+	if (input === "\x1b\x7f") {
+		return { type: "deleteWordBack" };
+	}
+	if (input === "\x1b[1;5A") {
+		return { type: "up" };
+	}
+	if (input === "\x1b[1;5B") {
+		return { type: "down" };
+	}
 	if (input.length === 1 && input.charCodeAt(0) < 32) {
 		const letter = String.fromCharCode(input.charCodeAt(0) + 64).toLowerCase();
 		return { type: "ctrl", value: letter };
@@ -126,6 +160,14 @@ function takeNextKey(input: string): { key: Key; length: number } | undefined {
 		return { key: { type: "paste", value: input.slice(PASTE_START.length, end) }, length };
 	}
 	if (input.startsWith("\x1b")) {
+		// Terminal device-status report (cursor position); consume, never emit as text.
+		const dsr = DSR_REPORT.exec(input);
+		if (dsr) {
+			return { key: { type: "report" }, length: dsr[0].length };
+		}
+		if (DSR_PARTIAL.test(input)) {
+			return undefined;
+		}
 		for (const sequence of ESCAPE_SEQUENCES) {
 			if (input.startsWith(sequence)) {
 				const key = parseKey(sequence);

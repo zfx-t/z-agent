@@ -18,6 +18,49 @@ export function availableInspectorViews(tool: TuiToolSnapshot, renderer?: TuiToo
 	return views;
 }
 
+/**
+ * One-line semantic summary of a tool invocation for the transcript row.
+ * Falls back to the pre-compact JSON args for unknown tools.
+ */
+export function toolTargetSummary(tool: TuiToolSnapshot): string {
+	const input = asRecord(tool.input);
+	if (!input) {
+		return tool.argsText;
+	}
+	const path = stringField(input, "path");
+	switch (tool.toolName) {
+		case "bash": {
+			const command = stringField(input, "command");
+			return command ? `$ ${command}` : tool.argsText;
+		}
+		case "edit": {
+			const edits = Array.isArray(input.edits) ? input.edits.length : 0;
+			const count = edits > 0 ? ` · ${edits} edit${edits === 1 ? "" : "s"}` : "";
+			return `${path ?? tool.argsText}${count}`;
+		}
+		case "write":
+		case "read":
+		case "ls":
+			return path ?? tool.argsText;
+		case "grep": {
+			const pattern = stringField(input, "pattern");
+			if (!pattern) {
+				return tool.argsText;
+			}
+			return path ? `/${pattern}/ in ${path}` : `/${pattern}/`;
+		}
+		case "find": {
+			const pattern = stringField(input, "pattern");
+			if (!pattern) {
+				return tool.argsText;
+			}
+			return path ? `${pattern} in ${path}` : pattern;
+		}
+		default:
+			return tool.argsText;
+	}
+}
+
 /** Compact metadata for the default inline inspector page. */
 export function summaryRows(tool: TuiToolSnapshot): TuiSummaryRow[] {
 	const input = asRecord(tool.input);
@@ -70,6 +113,22 @@ function safeRender(tool: TuiToolSnapshot, renderer?: TuiToolRenderer): TuiToolD
 	} catch {
 		return undefined;
 	}
+}
+
+/** First meaningful output line plus a remaining-line count for the ⎿ preview row. */
+export function previewLine(tool: TuiToolSnapshot): { text: string; more: number } | undefined {
+	const output = tool.outputText;
+	if (!output || output.trim().length === 0) {
+		return undefined;
+	}
+	const lines = output.split("\n");
+	if (tool.state === "running") {
+		const last = lines.filter((line) => line.trim().length > 0).at(-1);
+		return last ? { text: last, more: 0 } : undefined;
+	}
+	const first = lines.find((line) => line.trim().length > 0) ?? lines[0] ?? "";
+	const more = Math.max(0, lines.length - lines.indexOf(first) - 1);
+	return { text: first, more };
 }
 
 function diffLines(tool: TuiToolSnapshot): string[] {

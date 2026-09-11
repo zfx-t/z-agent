@@ -1,12 +1,12 @@
 import { DEFAULT_COMPLETION_ROWS, rankSlashCompletions, slashCompletionToken } from "./completion.ts";
 import type { ConfirmChoice, ConfirmRequest } from "./confirm.ts";
-import { confirmChoiceFromKey, formatConfirmPrompt } from "./confirm.ts";
+import { confirmChoiceFromKey } from "./confirm.ts";
 import { EditorBuffer } from "./editor.ts";
 import type { TuiAction } from "./keymap.ts";
 import { type ParsedKeymap, parseKeymapConfig, resolveAction } from "./keymap.ts";
 import { type Key, parseInputChunk } from "./keys.ts";
-import type { TuiFrameState } from "./layout.ts";
-import { renderFrame, transcriptViewportFor } from "./layout.ts";
+import type { TuiEntryCache, TuiFrameState } from "./layout.ts";
+import { renderFrameEx, transcriptViewportFor } from "./layout.ts";
 import type {
 	TuiCompletionCandidate,
 	TuiCompletionState,
@@ -20,6 +20,7 @@ import type {
 	TuiTranscriptEntry,
 } from "./model.ts";
 import { LineScreen } from "./screen.ts";
+import { reportAmbiguousWide } from "./text.ts";
 import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
 export interface InteractiveTuiOptions {
@@ -45,6 +46,10 @@ export interface InteractiveTuiOptions {
 	toolRenderer?: TuiToolRenderer;
 	/** Maximum visible completion rows. Defaults to 6. */
 	completionRows?: number;
+	/** Braille spinner + fast elapsed ticks. Defaults on; Z_AGENT_MOTION=off|0 disables. */
+	motion?: boolean;
+	/** Chrome glyph set; "auto" uses ascii under CJK/ambiguous-width terminals. Z_AGENT_GLYPHS overrides. */
+	glyphs?: "unicode" | "ascii" | "auto";
 }
 
 export interface PickListOptions {
@@ -109,8 +114,15 @@ export class InteractiveTui {
 	private readonly onData: (chunk: Buffer) => void;
 	private readonly onResize: () => void;
 	private nextEntryId = 0;
-	private readonly toolStartedAt = new Map<string, number>();
 	private pendingInput = "";
+	private runStartedAt: number | undefined;
+	private tickCount = 0;
+	private ticker: NodeJS.Timeout | undefined;
+	private readonly motion: boolean;
+	private readonly glyphTheme: "unicode" | "ascii" | undefined;
+	private readonly entryCache: TuiEntryCache = new WeakMap();
+	private probePending = false;
+	private probeTimer: NodeJS.Timeout | undefined;
 
 	constructor(options: InteractiveTuiOptions = {}) {
 		this.stdin = options.stdin ?? process.stdin;
@@ -129,6 +141,8 @@ export class InteractiveTui {
 		this.fixedColumns = options.columns;
 		this.fixedRows = options.rows;
 		this.colors = options.colors ?? (this.stdout.isTTY === true && process.env.NO_COLOR === undefined);
+		this.motion = options.motion ?? (process.env.Z_AGENT_MOTION !== "off" && process.env.Z_AGENT_MOTION !== "0");
+		this.glyphTheme = resolveGlyphTheme(options.glyphs);
 		this.onInterrupt = options.onInterrupt;
 		this.onData = (chunk) => {
 			this.handleInput(chunk.toString("utf-8"));
@@ -152,7 +166,51 @@ export class InteractiveTui {
 		if (this.stdout.isTTY) {
 			this.stdout.on("resize", this.onResize);
 		}
+		this.probeAmbiguousWidth();
 		this.repaint();
+	}
+
+	/**
+	 * Measure the terminal's ambiguous-glyph width once: print "─" on the alt
+	 * screen and read the DSR cursor-column report (2 = single, 3 = double).
+	 * Only meaningful on the real process streams — injected test streams can
+	 * never answer.
+	 */
+	private probeAmbiguousWidth(): void {
+		if (
+			process.env.Z_AGENT_AMBIGUOUS !== undefined ||
+			this.stdin !== process.stdin ||
+			this.stdout !== process.stdout
+		) {
+			return;
+		}
+		this.probePending = true;
+		this.probeTimer = setTimeout(() => {
+			this.resolveAmbiguousProbe(undefined);
+		}, 150);
+		this.probeTimer.unref?.();
+		this.stdout.write("─\x1b[6n");
+	}
+
+	private resolveAmbiguousProbe(wide: boolean | undefined): void {
+		if (!this.probePending) {
+			return;
+		}
+		this.probePending = false;
+		if (this.probeTimer) {
+			clearTimeout(this.probeTimer);
+			this.probeTimer = undefined;
+		}
+		if (wide !== undefined) {
+			reportAmbiguousWide(wide);
+		}
+		this.stdout.write("\r\x1b[2K");
+		const buffered = this.pendingInput;
+		this.pendingInput = "";
+		this.repaint();
+		if (buffered.length > 0) {
+			this.dispatchInput(buffered);
+		}
 	}
 
 	close(): void {
@@ -160,6 +218,15 @@ export class InteractiveTui {
 			return;
 		}
 		this.closed = true;
+		if (this.ticker) {
+			clearInterval(this.ticker);
+			this.ticker = undefined;
+		}
+		if (this.probeTimer) {
+			clearTimeout(this.probeTimer);
+			this.probeTimer = undefined;
+		}
+		this.probePending = false;
 		this.stdin.off("data", this.onData);
 		if (this.stdout.isTTY) {
 			this.stdout.off("resize", this.onResize);
@@ -175,7 +242,11 @@ export class InteractiveTui {
 	}
 
 	setStreaming(value: boolean): void {
+		if (value && !this.streaming) {
+			this.runStartedAt = Date.now();
+		}
 		this.streaming = value;
+		this.syncTicker();
 		this.repaint();
 	}
 
@@ -201,14 +272,15 @@ export class InteractiveTui {
 		this.repaint();
 	}
 
-	appendUser(text: string): void {
-		this.transcript.push(this.entry("user", text));
+	appendUser(text: string, queued = this.streaming): void {
+		const entry = this.entry("user", text);
+		entry.queued = queued;
+		this.transcript.push(entry);
 		this.repaint();
 	}
 
 	clearTranscript(): void {
 		this.transcript.length = 0;
-		this.toolStartedAt.clear();
 		this.transcriptScrollOffset = undefined;
 		this.followingLatest = true;
 		this.unseenEventCount = 0;
@@ -227,9 +299,10 @@ export class InteractiveTui {
 			input: args,
 			argsText: compactJson(args, 180),
 			state: "running",
+			startedAt: Date.now(),
 		};
-		this.toolStartedAt.set(toolCallId, Date.now());
 		this.transcript.push(this.entry("tool", `${toolName} ${tool.argsText}`, tool));
+		this.syncTicker();
 		this.repaint();
 	}
 
@@ -252,9 +325,9 @@ export class InteractiveTui {
 		entry.tool.state = isError ? "error" : "success";
 		entry.tool.outputText = output.trim();
 		entry.tool.detailsText = detailsText;
-		const startedAt = this.toolStartedAt.get(toolCallId) ?? Date.now();
+		const startedAt = entry.tool.startedAt ?? Date.now();
 		entry.tool.durationMs = Math.max(0, Date.now() - startedAt);
-		this.toolStartedAt.delete(toolCallId);
+		this.syncTicker();
 		this.repaint();
 	}
 
@@ -352,7 +425,32 @@ export class InteractiveTui {
 	}
 
 	private handleInput(raw: string): void {
-		const parsed = parseInputChunk(`${this.pendingInput}${raw}`);
+		const input = `${this.pendingInput}${raw}`;
+		this.pendingInput = "";
+		if (this.probePending) {
+			const report = DSR_REPORT.exec(input);
+			if (report === null) {
+				if (input.length >= 256) {
+					this.resolveAmbiguousProbe(undefined);
+				} else {
+					this.pendingInput = input;
+					return;
+				}
+			} else {
+				this.resolveAmbiguousProbe(Number(report[1]) === 3);
+				const rest = input.slice(0, report.index) + input.slice(report.index + report[0].length);
+				if (rest.length === 0) {
+					return;
+				}
+				this.dispatchInput(rest);
+				return;
+			}
+		}
+		this.dispatchInput(input);
+	}
+
+	private dispatchInput(input: string): void {
+		const parsed = parseInputChunk(input);
 		this.pendingInput = parsed.remainder;
 		for (const key of parsed.keys) {
 			this.dispatch(key);
@@ -449,6 +547,13 @@ export class InteractiveTui {
 			void this.openPalette();
 			return;
 		}
+		if (this.focus === "editor" && (key.type === "pageUp" || key.type === "pageDown")) {
+			this.focus = "transcript";
+			this.selectedToolCallId = undefined;
+			this.scrollTranscript(key.type === "pageUp" ? -this.scrollPage() : this.scrollPage());
+			this.repaint();
+			return;
+		}
 		if (this.focus === "transcript") {
 			if (action) {
 				this.dispatchTranscriptAction(action, key);
@@ -484,6 +589,24 @@ export class InteractiveTui {
 			refreshCompletion = true;
 		} else if (key.type === "right") {
 			this.editor.moveRight();
+			refreshCompletion = true;
+		} else if (key.type === "wordLeft") {
+			this.editor.moveWordLeft();
+			refreshCompletion = true;
+		} else if (key.type === "wordRight") {
+			this.editor.moveWordRight();
+			refreshCompletion = true;
+		} else if (key.type === "deleteWordForward") {
+			this.resetHistoryNavigation();
+			this.editor.deleteWordForward();
+			refreshCompletion = true;
+		} else if (key.type === "deleteWordBack") {
+			this.resetHistoryNavigation();
+			this.editor.deleteWordBackward();
+			refreshCompletion = true;
+		} else if (key.type === "ctrl" && key.value === "k") {
+			this.resetHistoryNavigation();
+			this.editor.killToLineEnd();
 			refreshCompletion = true;
 		} else if (key.type === "home" || (key.type === "ctrl" && key.value === "a")) {
 			this.editor.moveHome();
@@ -692,6 +815,10 @@ export class InteractiveTui {
 			this.moveInspectorView(-1);
 		} else if (key.type === "right") {
 			this.moveInspectorView(1);
+		} else if (key.type === "char" && key.value === "g") {
+			this.scrollTranscriptToTop();
+		} else if (key.type === "char" && key.value === "G") {
+			this.followTranscriptLatest();
 		} else if (key.type === "pageUp") {
 			if (this.activeInspector()) {
 				this.moveInspectorScroll(-6);
@@ -910,17 +1037,49 @@ export class InteractiveTui {
 	}
 
 	private repaint(): void {
-		const lines = renderFrame(this.frameState(), this.columns(), this.rows());
-		this.screen.paint(lines);
+		if (this.probePending) {
+			// Deferred until the width probe resolves — painting with the wrong
+			// ambiguous-width assumption wraps rows and desyncs absolute writes.
+			return;
+		}
+		const frame = renderFrameEx(this.frameState(), this.columns(), this.rows());
+		this.screen.paint(frame.lines, frame.cursor);
+	}
+
+	private syncTicker(): void {
+		const active =
+			this.streaming ||
+			this.transcript.some((entry) => typeof entry !== "string" && entry.tool?.state === "running");
+		if (active && this.ticker === undefined) {
+			this.ticker = setInterval(
+				() => {
+					this.tickCount += 1;
+					this.repaint();
+				},
+				this.motion ? 120 : 1000,
+			);
+			this.ticker.unref?.();
+		} else if (!active && this.ticker !== undefined) {
+			clearInterval(this.ticker);
+			this.ticker = undefined;
+		}
 	}
 
 	private frameState(): TuiFrameState {
+		const now = Date.now();
 		return {
 			status: this.statusFn(),
 			header: this.headerFn?.(),
 			transcript: this.transcript,
 			editorLines: this.editor.displayLines(),
-			confirm: this.confirm ? formatConfirmPrompt(this.confirm.request) : undefined,
+			editorCursor: this.editor.displayCursor(),
+			editorPlaceholder:
+				this.editor.value.length === 0
+					? this.streaming
+						? "queue a message for the running agent…"
+						: "message — / for commands · ctrl+p palette"
+					: undefined,
+			confirm: this.confirm?.request,
 			picker: this.picker
 				? {
 						title: this.picker.title,
@@ -940,6 +1099,12 @@ export class InteractiveTui {
 			colors: this.colors,
 			transcriptScrollOffset: this.transcriptScrollOffset,
 			toolRenderer: this.toolRenderer,
+			now,
+			tick: this.tickCount,
+			motion: this.motion,
+			runElapsedMs: this.streaming && this.runStartedAt !== undefined ? now - this.runStartedAt : undefined,
+			entryCache: this.entryCache,
+			glyphTheme: this.glyphTheme,
 		};
 	}
 
@@ -987,6 +1152,16 @@ function matchesQuery(item: string, query: string): boolean {
 		cursor += 1;
 	}
 	return true;
+}
+
+const DSR_REPORT = new RegExp(`${"\u001b"}\\[\\d+;(\\d+)R`);
+
+function resolveGlyphTheme(option: "unicode" | "ascii" | "auto" | undefined): "unicode" | "ascii" | undefined {
+	const env = process.env.Z_AGENT_GLYPHS;
+	if (env === "unicode" || env === "ascii") {
+		return env;
+	}
+	return option === "auto" ? undefined : option;
 }
 
 function formatBytes(size: number): string {

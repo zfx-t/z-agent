@@ -268,6 +268,14 @@ Acceptance:
 - 80x24 remains usable without horizontal scrolling;
 - wrapping preserves full-width Unicode correctness.
 
+Shipped in this cut: `RUNNING` + braille spinner + elapsed in the header,
+per-tool `✓ DONE`/`✗ FAIL` + duration markers, `⎿` output previews, a
+`waiting for model` row, a real terminal cursor in the editor box, readline
+word keys (`ctrl+arrows`, `ctrl+k`, `alt+backspace`), `Z_AGENT_MOTION=off`
+reduced motion, context-sensitive hint rows, and a DSR width probe so
+ambiguous-width (CJK) terminals cannot overflow painted rows
+(`Z_AGENT_AMBIGUOUS`, `Z_AGENT_GLYPHS` overrides).
+
 ### R7: Assistant Markdown (this slice)
 
 Acceptance:

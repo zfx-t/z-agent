@@ -3,9 +3,9 @@ import { rankSlashCompletions, slashCompletionToken } from "../src/completion.ts
 import { confirmChoiceFromKey, formatConfirmPrompt } from "../src/confirm.ts";
 import { EditorBuffer } from "../src/editor.ts";
 import { parseInputChunk, parseKey } from "../src/keys.ts";
-import { renderFrame } from "../src/layout.ts";
+import { renderFrame, renderFrameEx } from "../src/layout.ts";
 import { InteractiveTui } from "../src/session.ts";
-import { visibleWidth } from "../src/text.ts";
+import { cellWidth, setAmbiguousWide, visibleWidth } from "../src/text.ts";
 import { availableInspectorViews, detailLines } from "../src/tool-detail.ts";
 
 describe("keys + editor + confirm", () => {
@@ -23,6 +23,11 @@ describe("keys + editor + confirm", () => {
 		expect(parseKey("\x1b[A")).toEqual({ type: "up" });
 		expect(parseKey("\x1b[200~pasted text\x1b[201~")).toEqual({ type: "paste", value: "pasted text" });
 		expect(parseKey("hi")).toEqual({ type: "char", value: "hi" });
+		expect(parseKey("\x1b[1;5D")).toEqual({ type: "wordLeft" });
+		expect(parseKey("\x1b[1;5C")).toEqual({ type: "wordRight" });
+		expect(parseKey("\x1b[1;3D")).toEqual({ type: "wordLeft" });
+		expect(parseKey("\x1b[3;5~")).toEqual({ type: "deleteWordForward" });
+		expect(parseKey("\x1b\x7f")).toEqual({ type: "deleteWordBack" });
 	});
 
 	it("separates multiple raw keys and retains incomplete bracketed paste", () => {
@@ -48,9 +53,28 @@ describe("keys + editor + confirm", () => {
 		editor.insert("\nline");
 		editor.moveUp();
 		editor.moveEnd();
-		expect(editor.displayLines()).toEqual(["beta|", "line"]);
+		expect(editor.displayLines()).toEqual(["beta", "line"]);
+		expect(editor.displayCursor()).toEqual({ row: 0, col: 4 });
 		expect(editor.submit()).toBe("beta\nline");
 		expect(editor.value).toBe("");
+	});
+
+	it("moves and deletes by word and kills to line end", () => {
+		const editor = new EditorBuffer();
+		editor.set("alpha beta  gamma\nsecond line");
+		editor.moveWordLeft();
+		expect(editor.cursorOffset).toBe(25);
+		editor.moveWordLeft();
+		expect(editor.cursorOffset).toBe(18);
+		editor.deleteWordForward();
+		expect(editor.value).toBe("alpha beta  gamma\n line");
+		editor.killToLineEnd();
+		expect(editor.value).toBe("alpha beta  gamma\n");
+		editor.set("ab\ncd");
+		editor.moveWordLeft();
+		editor.moveLeft();
+		editor.killToLineEnd();
+		expect(editor.value).toBe("abcd");
 	});
 
 	it("replaces a range without moving arguments or their relative cursor", () => {
@@ -129,9 +153,9 @@ describe("renderFrame", () => {
 		);
 		const frame = lines.map(stripAnsi).join("\n");
 		expect(frame).toContain("model=gpt");
-		expect(frame).toContain("YOU hi");
-		expect(frame).toContain("AI  hello");
-		expect(frame).toContain("Enter send");
+		expect(frame).toContain("YOU   hi");
+		expect(frame).toContain("AI    hello");
+		expect(frame).toContain("enter send");
 	});
 
 	it("fits a narrow viewport and strips untrusted terminal controls", () => {
@@ -161,7 +185,7 @@ describe("renderFrame", () => {
 		const frame = lines.map(stripAnsi);
 		expect(frame).toHaveLength(11);
 		expect(frame.join("\n")).toContain("line two");
-		expect(frame.join("\n")).toContain("TOOL bash");
+		expect(frame.join("\n")).toContain("TOOL  bash");
 		expect(frame.join("")).not.toContain("\x1b");
 		for (const line of frame) {
 			expect(line.length).toBeLessThanOrEqual(28);
@@ -265,7 +289,7 @@ describe("renderFrame", () => {
 		).map(stripAnsi);
 		const header = frame[0] ?? "";
 		expect(visibleWidth(header)).toBeLessThanOrEqual(80);
-		expect(header).toContain("status: RUNNING");
+		expect(header).toContain("RUNNING");
 		expect(header).toContain("ctx: 12k/128k 9%");
 		expect(header).toContain("model: fast(gpt-4.1-mini)");
 		expect(header).not.toContain("a-very-long-extension");
@@ -301,7 +325,7 @@ describe("renderFrame", () => {
 			72,
 			10,
 		).join("\n");
-		expect(frame).toContain("Ctrl+C exit");
+		expect(frame).toContain("ctrl+c exit");
 		expect(frame).not.toContain("...");
 	});
 
@@ -336,11 +360,11 @@ describe("renderFrame", () => {
 		);
 		const text = frame.join("\n");
 		expect(frame).toHaveLength(24);
-		expect(text).toContain("status: RUNNING");
+		expect(text).toContain("RUNNING");
 		expect(text).toContain("DONE");
 		expect(text).toContain("FAIL");
 		expect(text).toContain("[Pasted text - 1.2 KB]");
-		expect(text).toContain("Ctrl+C interrupt");
+		expect(text).toContain("ctrl+c interrupt");
 		expect(text).not.toContain("TOOL DETAILS");
 		for (const line of frame) {
 			expect(line.length).toBeLessThanOrEqual(80);
@@ -372,7 +396,7 @@ describe("renderFrame", () => {
 			80,
 			24,
 		).join("\n");
-		expect(frame).toContain(">TOOL read");
+		expect(frame).toContain(">TOOL  read");
 		expect(frame).toContain("2 new events");
 	});
 
@@ -496,7 +520,7 @@ describe("renderFrame", () => {
 			16,
 		).map(stripAnsi);
 		const text = frame.join("\n");
-		expect(text).toContain("YOU use **bold**");
+		expect(text).toContain("YOU   use **bold**");
 		expect(text).toContain("# Done");
 		expect(text).toContain("Use `renderMarkdown` and docs (https://example.com).");
 		expect(text).not.toContain("[docs](https://example.com)");
@@ -530,7 +554,7 @@ describe("renderFrame", () => {
 		).map(stripAnsi);
 		const text = frame.join("\n");
 		expect(text).toContain("THINK plan **secret** and `x`");
-		expect(text).toContain('TOOL bash {"command":"**star**"}');
+		expect(text).toContain('TOOL  bash {"command":"**star**"}');
 		expect(text).toContain("# Title");
 		expect(text).toContain("Hello **bold**");
 		expect(text).not.toContain("plan secret");
@@ -572,6 +596,132 @@ describe("renderFrame", () => {
 		for (const line of frame) {
 			expect(line.length).toBeLessThanOrEqual(80);
 		}
+	});
+});
+
+describe("renderFrame detail rows", () => {
+	const base = { status: "model=gpt", transcript: [], editorLines: [""], streaming: false, colors: false };
+
+	it("renders tool target summaries, durations, and output previews", () => {
+		const frame = renderFrame(
+			{
+				...base,
+				transcript: [
+					{
+						id: "t1",
+						kind: "tool",
+						text: "",
+						tool: {
+							toolCallId: "c1",
+							toolName: "bash",
+							input: { command: "npm test" },
+							argsText: '{"command":"npm test"}',
+							state: "success",
+							outputText: "12 passed\n3 skipped",
+							durationMs: 1530,
+						},
+					},
+				],
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain("TOOL  bash $ npm test");
+		expect(frame).toContain("DONE 1.5s");
+		expect(frame).toContain("⎿ 12 passed · +1 lines");
+	});
+
+	it("marks steered input queued and collapses hidden thinking", () => {
+		const frame = renderFrame(
+			{
+				...base,
+				transcript: [
+					{ id: "u", kind: "user", text: "keep going", queued: true },
+					{ id: "t", kind: "thinking", text: "secret plan", hidden: true },
+				],
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain("YOU   keep going  (queued)");
+		expect(frame).toContain("THINK (hidden — ctrl+t to expand)");
+		expect(frame).not.toContain("secret plan");
+	});
+
+	it("shows a waiting row when streaming with no active entry", () => {
+		const frame = renderFrame(
+			{
+				...base,
+				streaming: true,
+				motion: false,
+				transcript: [{ id: "u", kind: "user", text: "go" }],
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain("waiting for model");
+	});
+
+	it("positions a real cursor in the editor and hides it for transcript focus", () => {
+		const withCursor = renderFrameEx(
+			{ ...base, editorLines: ["fix the bug"], editorCursor: { row: 0, col: 4 } },
+			80,
+			24,
+		);
+		expect(withCursor.cursor).toBeDefined();
+		expect(withCursor.cursor?.col).toBe(8);
+		const unfocused = renderFrameEx(
+			{ ...base, editorLines: ["fix the bug"], editorCursor: { row: 0, col: 4 }, focus: "transcript" },
+			80,
+			24,
+		);
+		expect(unfocused.cursor).toBeUndefined();
+	});
+
+	it("keeps every painted line inside the width under double-width ambiguous glyphs", () => {
+		setAmbiguousWide(true);
+		try {
+			expect(cellWidth("─")).toBe(2);
+			const frame = renderFrameEx(
+				{
+					...base,
+					glyphTheme: "unicode",
+					streaming: true,
+					transcript: [
+						{ id: "u", kind: "user", text: "先按字面找到这两个" },
+						{
+							id: "t1",
+							kind: "tool",
+							text: "",
+							tool: {
+								toolCallId: "c1",
+								toolName: "bash",
+								input: { command: "cp -r src dst" },
+								argsText: "{}",
+								state: "running",
+								startedAt: 0,
+							},
+						},
+					],
+					now: 2000,
+				},
+				80,
+				24,
+			);
+			for (const line of frame.lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+			}
+			expect(frame.lines.join("\n")).toContain("╭");
+		} finally {
+			setAmbiguousWide(undefined);
+		}
+	});
+
+	it("uses ascii chrome when the glyph theme is ascii", () => {
+		const frame = renderFrame({ ...base, glyphTheme: "ascii" }, 80, 24).join("\n");
+		expect(frame).toContain("+--");
+		expect(frame).toContain("| >");
+		expect(frame).not.toContain("╭");
 	});
 });
 

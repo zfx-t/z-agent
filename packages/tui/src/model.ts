@@ -55,6 +55,8 @@ export interface TuiToolSnapshot {
 	outputText?: string;
 	detailsText?: string;
 	durationMs?: number;
+	/** Start timestamp for elapsed-time display while running. */
+	startedAt?: number;
 }
 
 export interface TuiTranscriptEntry {
@@ -63,6 +65,8 @@ export interface TuiTranscriptEntry {
 	text: string;
 	createdAt?: number;
 	hidden?: boolean;
+	/** Set when the user message was steered into an active run. */
+	queued?: boolean;
 	tool?: TuiToolSnapshot;
 }
 

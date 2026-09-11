@@ -71,6 +71,50 @@ export class EditorBuffer {
 		this.cursor = Math.min(this.text.length, this.cursor + 1);
 	}
 
+	moveWordLeft(): void {
+		let next = this.cursor;
+		while (next > 0 && /\s/.test(this.text[next - 1] ?? "")) {
+			next -= 1;
+		}
+		while (next > 0 && !/\s/.test(this.text[next - 1] ?? "")) {
+			next -= 1;
+		}
+		this.cursor = next;
+	}
+
+	moveWordRight(): void {
+		let next = this.cursor;
+		while (next < this.text.length && !/\s/.test(this.text[next] ?? "")) {
+			next += 1;
+		}
+		while (next < this.text.length && /\s/.test(this.text[next] ?? "")) {
+			next += 1;
+		}
+		this.cursor = next;
+	}
+
+	deleteWordForward(): void {
+		let end = this.cursor;
+		while (end < this.text.length && /\s/.test(this.text[end] ?? "")) {
+			end += 1;
+		}
+		while (end < this.text.length && !/\s/.test(this.text[end] ?? "")) {
+			end += 1;
+		}
+		if (end > this.cursor) {
+			this.replace(this.cursor, end, "");
+		}
+	}
+
+	killToLineEnd(): void {
+		const end = this.lineEnd(this.cursor);
+		if (end > this.cursor) {
+			this.replace(this.cursor, end, "");
+		} else if (end < this.text.length) {
+			this.replace(this.cursor, end + 1, "");
+		}
+	}
+
 	moveHome(): void {
 		this.cursor = this.lineStart(this.cursor);
 	}
@@ -127,8 +171,21 @@ export class EditorBuffer {
 	}
 
 	displayLines(): string[] {
-		const display = this.displayValueWithCursor();
-		return display.split("\n");
+		return this.displayValue().text.split("\n");
+	}
+
+	/** Cursor as {row, col} in display-line coordinates (col counts characters). */
+	displayCursor(): { row: number; col: number } {
+		const { text, cursor } = this.displayValue();
+		let row = 0;
+		let lineStart = 0;
+		for (let index = 0; index < cursor; index += 1) {
+			if (text[index] === "\n") {
+				row += 1;
+				lineStart = index + 1;
+			}
+		}
+		return { row, col: cursor - lineStart };
 	}
 
 	submit(): string {
@@ -155,38 +212,36 @@ export class EditorBuffer {
 		this.cursor = start + inserted.length;
 	}
 
-	private displayValueWithCursor(): string {
+	private displayValue(): { text: string; cursor: number } {
 		const spans = this.placeholders.slice().sort((left, right) => left.start - right.start || left.end - right.end);
 		let output = "";
 		let sourceOffset = 0;
-		let cursorRendered = false;
+		let cursor = -1;
 		for (const span of spans) {
 			if (span.start < sourceOffset || span.start > this.text.length) {
 				continue;
 			}
 			if (this.cursor < span.start) {
 				output += this.text.slice(sourceOffset, this.cursor);
-				output += "|";
+				cursor = output.length;
 				output += this.text.slice(this.cursor, span.start);
-				cursorRendered = true;
 			} else {
 				output += this.text.slice(sourceOffset, span.start);
 			}
 			output += span.label;
 			sourceOffset = span.end;
-			if (!cursorRendered && this.cursor >= span.start && this.cursor <= span.end) {
-				output += "|";
-				cursorRendered = true;
+			if (cursor < 0 && this.cursor >= span.start && this.cursor <= span.end) {
+				cursor = output.length;
 			}
 		}
-		if (!cursorRendered) {
+		if (cursor < 0) {
 			output += this.text.slice(sourceOffset, this.cursor);
-			output += "|";
+			cursor = output.length;
 			output += this.text.slice(this.cursor);
 		} else {
 			output += this.text.slice(sourceOffset);
 		}
-		return output;
+		return { text: output, cursor };
 	}
 
 	private lineStart(offset: number): number {

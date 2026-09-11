@@ -16,8 +16,16 @@ export {
 } from "./keymap.ts";
 export type { Key } from "./keys.ts";
 export { parseInputChunk, parseKey } from "./keys.ts";
-export type { TuiFrameState, TuiPickerState } from "./layout.ts";
-export { renderFrame } from "./layout.ts";
+export type {
+	TuiEntryCache,
+	TuiFrame,
+	TuiFrameState,
+	TuiGlyphs,
+	TuiGlyphTheme,
+	TuiPickerState,
+	TuiScrollInfo,
+} from "./layout.ts";
+export { formatElapsed, renderFrame, renderFrameEx } from "./layout.ts";
 export type {
 	TuiCompletionCandidate,
 	TuiCompletionState,
@@ -37,4 +45,5 @@ export type { LabeledSegment } from "./segments.ts";
 export { fitLabeledSegments } from "./segments.ts";
 export type { InteractiveTuiOptions, PickListOptions } from "./session.ts";
 export { InteractiveTui } from "./session.ts";
-export { availableInspectorViews, detailLines, summaryRows } from "./tool-detail.ts";
+export { isAmbiguousWide, setAmbiguousWide } from "./text.ts";
+export { availableInspectorViews, detailLines, previewLine, summaryRows, toolTargetSummary } from "./tool-detail.ts";

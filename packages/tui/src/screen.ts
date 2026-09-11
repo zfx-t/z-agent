@@ -32,7 +32,7 @@ export class LineScreen {
 		this.previous = [];
 	}
 
-	paint(lines: string[]): void {
+	paint(lines: string[], cursor?: { row: number; col: number }): void {
 		const out: string[] = [];
 		const max = Math.max(this.previous.length, lines.length);
 		for (let i = 0; i < max; i++) {
@@ -42,9 +42,8 @@ export class LineScreen {
 				out.push(`\x1b[${i + 1};1H\x1b[2K${next}`);
 			}
 		}
-		if (out.length > 0) {
-			this.write(out.join(""));
-		}
+		out.push(cursor ? `\x1b[${cursor.row + 1};${cursor.col + 1}H\x1b[?25h` : "\x1b[?25l");
+		this.write(out.join(""));
 		this.previous = lines.slice();
 	}
 }
