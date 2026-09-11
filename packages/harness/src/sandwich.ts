@@ -1,11 +1,11 @@
-import type { JsonlOpStore, OpKind, OpState } from "./store.ts";
+import type { OpKind, OpState, OpStore } from "./store.ts";
 
 /**
  * intent commit → effect → settle commit.
  * If op.state is already `done`, return the stored result and skip the effect.
  */
 export async function withSandwich<TIntent, TResult>(
-	store: JsonlOpStore,
+	store: OpStore,
 	opId: string,
 	kind: OpKind,
 	intent: TIntent,

@@ -5,8 +5,8 @@
 import { join } from "node:path";
 import { stdin } from "node:process";
 import { Agent, type AgentMessage, createAllTools } from "@z-agent/agent";
-import { createOpenAIResponsesModel, createOpenAIResponsesStream, emptyUsage, type StreamFn } from "@z-agent/ai";
-import { JsonlOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
+import { createProviderStream, emptyUsage, type Model, providerForApi, type StreamFn } from "@z-agent/ai";
+import { JsonlOpStore, type OpStore, SqliteOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
 import { InteractiveTui, type TuiCompletionCandidate, type TuiHeaderSegment } from "@z-agent/tui";
 import { SigintAbort } from "./abort.ts";
 import { looksLikeReasoningModel, parseArgs, printHelp } from "./args.ts";
@@ -194,6 +194,7 @@ async function main(): Promise<void> {
 	const resolved = resolveModel(modelRefFromArgs(args.model), loaded.catalog, process.env, {
 		contextWindow: args.contextWindow,
 		maxTokens: args.maxTokens,
+		api: args.api,
 	});
 	if (!resolved.hasModel) {
 		console.error(resolved.warning);
@@ -242,6 +243,7 @@ async function main(): Promise<void> {
 		hasModel: resolved.hasModel,
 		alias: resolved.hasModel ? resolved.alias : undefined,
 		id: resolved.hasModel ? resolved.id : undefined,
+		api: resolved.hasModel ? resolved.api : undefined,
 		thinking: resolved.hasModel ? resolved.thinking : "off",
 		contextWindow: resolved.hasModel ? resolved.contextWindow : undefined,
 		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
@@ -272,13 +274,13 @@ async function main(): Promise<void> {
 		}
 	}
 
-	let streamFn: StreamFn = createOpenAIResponsesStream({
-		apiKey,
-		baseUrl: resolved.hasModel ? resolved.baseUrl : process.env.OPENAI_BASE_URL,
-	});
+	let streamFn: StreamFn = createProviderStream();
 	let tools = [...createAllTools(cwd, { jailRoot: jail ? cwd : false }), ...host.tools, skillManager.createReadTool()];
 	if (args.durable) {
-		const store = new JsonlOpStore(join(projectPillow, "harness"));
+		const store: OpStore =
+			args.durableBackend === "sqlite"
+				? new SqliteOpStore(join(projectPillow, "harness"))
+				: new JsonlOpStore(join(projectPillow, "harness"));
 		streamFn = wrapStreamFn(streamFn, store);
 		tools = wrapTools(tools, store);
 	}
@@ -395,12 +397,17 @@ async function main(): Promise<void> {
 		},
 	});
 
-	const model = createOpenAIResponsesModel({
+	const resolvedApi = resolved.hasModel ? resolved.api : "openai-responses";
+	const model: Model = {
 		id: modelId,
-		baseUrl: resolved.hasModel ? resolved.baseUrl : undefined,
+		name: modelId,
+		api: resolvedApi,
+		provider: providerForApi(resolvedApi),
+		baseUrl: resolved.hasModel ? (resolved.baseUrl ?? "") : "",
+		input: ["text", "image"],
 		contextWindow: resolved.hasModel ? resolved.contextWindow : undefined,
 		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
-	});
+	};
 	agent = new Agent({
 		streamFn,
 		apiKey,
@@ -553,7 +560,8 @@ async function main(): Promise<void> {
 				process.exit(1);
 			}
 			if (!apiKey) {
-				console.error("error: OPENAI_API_KEY is required (or set apiKey in ~/.pillow/config.json)");
+				const keyEnv = resolved.api === "anthropic-messages" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+				console.error(`error: ${keyEnv} is required (or set apiKey in ~/.pillow/config.json)`);
 				await persist();
 				abort.detach();
 				process.exit(1);

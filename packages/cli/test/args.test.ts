@@ -34,6 +34,22 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--bogus"]).error).toBe("Unknown flag: --bogus");
 	});
 
+	it("parses --api provider selection", () => {
+		expect(parseArgs([]).api).toBeUndefined();
+		expect(parseArgs(["--api", "anthropic-messages"]).api).toBe("anthropic-messages");
+		expect(parseArgs(["--api", "openai-completions"]).api).toBe("openai-completions");
+		expect(parseArgs(["--api"]).error).toBe("Missing value for --api");
+		expect(parseArgs(["--api", "bogus"]).error).toBe("Invalid value for --api");
+	});
+
+	it("parses durable backend", () => {
+		expect(parseArgs(["--durable"]).durableBackend).toBe("jsonl");
+		expect(parseArgs(["--durable", "--durable-backend", "sqlite"]).durableBackend).toBe("sqlite");
+		expect(parseArgs(["--durable-backend", "jsonl"]).durableBackend).toBe("jsonl");
+		expect(parseArgs(["--durable-backend"]).error).toBe("Missing value for --durable-backend");
+		expect(parseArgs(["--durable-backend", "memory"]).error).toBe("Invalid value for --durable-backend");
+	});
+
 	it("parses context window and max token flags", () => {
 		const args = parseArgs(["--context-window", "200000", "--max-tokens", "8192"]);
 		expect(args.contextWindow).toBe(200_000);

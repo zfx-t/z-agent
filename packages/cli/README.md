@@ -12,7 +12,11 @@ User state lives in `~/.pillow` (override with `PILLOW_HOME`). Model aliases, th
 
 ## Flags
 
-`--cwd` `--model` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--context-window` `--max-tokens`
+`--cwd` `--model` `--api` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--durable-backend` `--context-window` `--max-tokens`
+
+Provider dialect: catalog entry `api` or `--api` selects `openai-responses`
+(default), `openai-completions`, or `anthropic-messages`. Keys resolve per api:
+`ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` for anthropic, `OPENAI_*` otherwise.
 
 Print / non-TTY defaults to `--yes`. TUI asks before `bash` / `write` / `edit`. Path jail is on unless `--no-jail`.
 

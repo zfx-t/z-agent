@@ -4,7 +4,7 @@ Clean-room agent runtime, coding TUI, and L5 JSONL harness.
 
 | Package | Name | Role |
 |---------|------|------|
-| `packages/ai` | `@z-agent/ai` | Messages, stream events, Responses (+ thinking replay) |
+| `packages/ai` | `@z-agent/ai` | Messages, stream events, Responses / Completions / Anthropic adapters |
 | `packages/agent` | `@z-agent/agent` | Loop + coding tools |
 | `packages/skills` | `@z-agent/skills` | Skill discovery, matching, state, rendering, and resource validation |
 | `packages/tui` | `@z-agent/tui` | Alt-screen TUI |
@@ -14,13 +14,16 @@ Clean-room agent runtime, coding TUI, and L5 JSONL harness.
 ## Try
 
 ```bash
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...        # openai-responses / openai-completions
+export ANTHROPIC_API_KEY=sk-ant-... # anthropic-messages
 npm install --ignore-scripts
 npm run z-agent
 npx z-agent -p --yes "summarize README.md"
 ```
 
-Config: `~/.pillow/config.json` (ADR-0022).
+Config: `~/.pillow/config.json` (ADR-0022). Model catalog entries pick the wire
+dialect with `api`: `openai-responses` (default), `openai-completions`, or
+`anthropic-messages`; `--api` overrides per run (ADR-0027).
 
 ## Skills
 

@@ -18,13 +18,15 @@
 | [0014](0014-license-privacy.md) | MIT, private packages | Accepted |
 | [0015](0015-post-v0-in-memory-surface.md) | Post-v0 in-memory oracle surface | Accepted |
 | [0016](0016-coding-product.md) | Coding product surface (TUI-first) | Accepted |
-| [0016-cli](0016-coding-cli.md) | Coding CLI slice | Superseded |
 | [0017](0017-thinking-sse-replay.md) | Responses thinking SSE + replay | Accepted |
+| [0018](0018-coding-cli.md) | Coding CLI slice | Superseded |
 | [0021](0021-l5-jsonl-harness.md) | L5 JSONL harness | Accepted |
 | [0022](0022-pillow-home.md) | Pillow home and user config | Accepted |
 | [0023](0023-tui-markdown.md) | Assistant Markdown via marked lexer | Accepted |
 | [0024](0024-session-checkpoints.md) | Session checkpoints | Accepted |
 | [0025](0025-extension-surface.md) | Command registry and extension surface | Accepted |
+| [0026](0026-sqlite-op-state.md) | SQLite op.state backend | Accepted |
+| [0027](0027-multi-provider.md) | Multi-provider stream dispatch | Accepted |
 
 ## Format
 

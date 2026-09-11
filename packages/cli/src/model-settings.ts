@@ -11,6 +11,7 @@ export interface ModelSettingsView {
 	hasModel: boolean;
 	alias?: string;
 	id: string;
+	api?: string;
 	thinking: ThinkingLevel;
 	contextWindow?: number;
 	maxTokens?: number;
@@ -51,6 +52,7 @@ export function modelSettingsView(input: {
 	hasModel: boolean;
 	alias?: string;
 	id?: string;
+	api?: string;
 	thinking?: ThinkingLevel;
 	contextWindow?: number;
 	maxTokens?: number;
@@ -63,6 +65,7 @@ export function modelSettingsView(input: {
 		hasModel: true,
 		...(alias ? { alias } : {}),
 		id: input.id?.trim() || "unknown",
+		...(input.api ? { api: input.api } : {}),
 		thinking: input.thinking ?? "off",
 		...(optionalPositive(input.contextWindow) !== undefined
 			? { contextWindow: optionalPositive(input.contextWindow) }
@@ -116,7 +119,8 @@ export function formatModelSettings(view: ModelSettingsView): string {
 		return "[model] none";
 	}
 	const alias = view.alias ? `alias=${view.alias} ` : "";
-	return `[model] ${alias}id=${view.id} thinking=${view.thinking} contextWindow=${renderCount(view.contextWindow)} maxTokens=${renderCount(view.maxTokens)} persist=${view.persist}`;
+	const api = view.api ? ` api=${view.api}` : "";
+	return `[model] ${alias}id=${view.id}${api} thinking=${view.thinking} contextWindow=${renderCount(view.contextWindow)} maxTokens=${renderCount(view.maxTokens)} persist=${view.persist}`;
 }
 
 export function formatRuntimeStatus(input: {
@@ -130,7 +134,8 @@ export function formatRuntimeStatus(input: {
 		: input.view.alias
 			? `${input.view.alias}(${input.view.id})`
 			: input.view.id;
-	return `[status] model=${label} thinking=${input.view.thinking} contextWindow=${renderCount(input.view.contextWindow)} maxTokens=${renderCount(input.view.maxTokens)} persist=${input.view.persist} skills=${input.skillsMode}:${input.skillsActive} cwd=${input.cwd}`;
+	const api = input.view.api ? ` api=${input.view.api}` : "";
+	return `[status] model=${label}${api} thinking=${input.view.thinking} contextWindow=${renderCount(input.view.contextWindow)} maxTokens=${renderCount(input.view.maxTokens)} persist=${input.view.persist} skills=${input.skillsMode}:${input.skillsActive} cwd=${input.cwd}`;
 }
 
 export function formatCompactContext(window?: number): string {

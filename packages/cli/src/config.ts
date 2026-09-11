@@ -4,7 +4,7 @@
 
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ThinkingLevel } from "@z-agent/ai";
+import type { ProviderApi, ThinkingLevel } from "@z-agent/ai";
 import { z } from "zod";
 import { looksLikeReasoningModel } from "./args.ts";
 import type { AliasSettingsPatch } from "./model-settings.ts";
@@ -19,8 +19,14 @@ export const NO_MODEL_WARNING = "warning: no model in use";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+const apiSchema = z.enum(["openai-responses", "openai-completions", "anthropic-messages"] satisfies [
+	ProviderApi,
+	...ProviderApi[],
+]);
+
 const modelEntrySchema = z.object({
 	id: z.string().min(1),
+	api: apiSchema.optional(),
 	baseUrl: z.string().min(1).optional(),
 	apiKey: z.string().min(1).optional(),
 	thinking: thinkingSchema.optional(),
@@ -46,6 +52,7 @@ export interface ResolvedModel {
 	hasModel: true;
 	id: string;
 	alias?: string;
+	api: ProviderApi;
 	baseUrl?: string;
 	apiKey?: string;
 	thinking: ThinkingLevel;
@@ -63,6 +70,8 @@ export type ModelResolution = ResolvedModel | UnresolvedModel;
 export interface ModelNumericOverrides {
 	contextWindow?: number;
 	maxTokens?: number;
+	/** Overrides the catalog entry's api selection (--api flag). */
+	api?: ProviderApi;
 }
 
 export function configPath(userPillow = pillowUserDir()): string {
@@ -148,6 +157,13 @@ function resolveNumericField(
 	return override ?? envValue ?? fileValue;
 }
 
+/** Per-api env vars for key/baseUrl resolution (ADR-0027). */
+function envNamesForApi(api: ProviderApi): { key: string; baseUrl: string } {
+	return api === "anthropic-messages"
+		? { key: "ANTHROPIC_API_KEY", baseUrl: "ANTHROPIC_BASE_URL" }
+		: { key: "OPENAI_API_KEY", baseUrl: "OPENAI_BASE_URL" };
+}
+
 export function resolveModel(
 	ref: string | undefined,
 	catalog: PillowCatalog | undefined,
@@ -161,13 +177,16 @@ export function resolveModel(
 	}
 
 	const entry = catalog?.models[name];
+	const api: ProviderApi = overrides.api ?? entry?.api ?? "openai-responses";
+	const envNames = envNamesForApi(api);
 	if (entry) {
 		return {
 			hasModel: true,
 			id: entry.id,
 			alias: name,
-			baseUrl: env.OPENAI_BASE_URL || entry.baseUrl,
-			apiKey: env.OPENAI_API_KEY || entry.apiKey,
+			api,
+			baseUrl: env[envNames.baseUrl] || entry.baseUrl,
+			apiKey: env[envNames.key] || entry.apiKey,
 			thinking: resolveThinking(entry.id, entry.thinking),
 			contextWindow: resolveNumericField(
 				overrides.contextWindow,
@@ -185,8 +204,9 @@ export function resolveModel(
 	return {
 		hasModel: true,
 		id: name,
-		baseUrl: env.OPENAI_BASE_URL || undefined,
-		apiKey: env.OPENAI_API_KEY || undefined,
+		api,
+		baseUrl: env[envNames.baseUrl] || undefined,
+		apiKey: env[envNames.key] || undefined,
 		thinking: resolveThinking(name),
 		contextWindow: resolveNumericField(
 			overrides.contextWindow,

@@ -25,9 +25,10 @@ Responses stream; thinking SSE + signature replay (ADR-0017).
   trust for executable extensions
 - `@z-agent/harness` JSONL L5 (`--durable`)
 
-## Phase 3 — L5 durable harness (done, JSONL)
+## Phase 3 — L5 durable harness (done)
 
-SQLite backend TBD (separate ADR).
+JSONL backend (ADR-0021) and SQLite backend via `node:sqlite` behind
+`--durable-backend sqlite` (ADR-0026).
 
 ## Phase 2.6 — Pillow home + user config (done)
 
@@ -60,3 +61,9 @@ Interactive assistant rows render GFM (headings, emphasis, lists, fences, links,
 Command registry, Extension API v1 (commands / tools / status segments / `on` /
 tool renderers), header occupancy, `~/.pillow/keys.json`, and a write-to-editor
 command palette. Extension tools stay behind confirm. (ADR-0025)
+
+## Phase 2.12 — Multi-provider dispatch (done)
+
+`openai-completions` and `anthropic-messages` adapters next to the existing
+Responses path; `createProviderStream` routes per-call on `model.api`. Catalog
+entries and `--api` select the dialect; `ANTHROPIC_*` env keys. (ADR-0027)

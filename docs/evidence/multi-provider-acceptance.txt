@@ -1,0 +1,85 @@
+multi-provider acceptance evidence (ADR-0027)
+=============================================
+date: 2026-09-11
+commands:
+  npm run check                          -> green (biome 142 files + 6x tsc --noEmit)
+  node_modules/.bin/vitest --run         -> 52 files / 414 tests passed
+
+A. event protocol invariants
+  - openai-completions.test.ts "streams text deltas and done with usage":
+    exact event order [start, text_start, text_delta, text_delta, text_end, done]
+  - anthropic-messages.test.ts "streams tool_use ...": exact order
+    [start, toolcall_start, toolcall_delta, toolcall_delta, toolcall_end, done]
+  - "keeps partial arguments empty until toolcall_end": partial.arguments === {}
+    during toolcall_delta (completions); anthropic input_json_delta same path
+  - provider-stream.test.ts: final.api === model.api for all three adapters
+
+B. wire fidelity
+  - completions: POST {base}/chat/completions, Bearer auth, stream_options
+    include_usage, max_tokens, reasoning_effort; samplingParams cannot clobber
+    stream/model/messages
+  - completions: two tool_calls aggregated by index with interleaved arg chunks
+    (test "aggregates multiple tool_calls by index across chunks")
+  - anthropic: x-api-key + anthropic-version headers, NO Authorization;
+    anthropic-beta only when reasoning enabled; max_tokens always present;
+    thinking budget clamped to < max_tokens (high@4096 -> 4095; medium@500 ->
+    omitted)
+  - finish_reason matrix: stop/length/tool_calls (+content_filter->error)
+  - stop_reason matrix: end_turn/stop_sequence->stop, max_tokens->length,
+    tool_use->toolUse, refusal->error
+  - usage: completions cached_tokens->cacheRead, input deducted; anthropic
+    cache_read_input_tokens/cache_creation_input_tokens->cacheRead/cacheWrite,
+    input deducted; message_delta output_tokens merges
+
+C. history replay (round-trip)
+  - anthropic: thinking signature replayed byte-for-byte; redacted ->
+    redacted_thinking; unsigned thinking dropped; consecutive toolResults merge
+    into one user turn of tool_result blocks; is_error carried
+  - completions: toolCall -> tool_calls (id stripped of |fc_ suffix),
+    toolResult -> role:"tool" + tool_call_id, thinking NOT replayed
+  - images: anthropic base64 source / completions image_url data URL
+
+D. error matrix (each adapter)
+  - HTTP 401/403 -> stopReason error, status in message, body bounded
+  - missing key -> error naming OPENAI_API_KEY / ANTHROPIC_API_KEY respectively
+  - abort mid-stream -> aborted, partial content retained, no events after end
+  - invalid tool args JSON -> error (matches responses toolArgsError semantics)
+  - stream ending without finish_reason / message_stop -> error, no hang
+  - streamed error objects (completions chunk.error / anthropic error event)
+
+E. dispatch + config
+  - createProviderStream routes per-call on model.api; unknown api -> error
+    result, never throws; single streamFn serves all three apis in sequence
+  - config.json entries without `api` -> openai-responses (back-compat);
+    invalid api value -> parse warning, not silent
+  - precedence: --api flag > catalog api > default; ANTHROPIC_API_KEY not
+    shadowed by OPENAI_API_KEY for anthropic entries (config.test.ts)
+
+F. regression
+  - full vitest suite: 414 tests green incl. all pre-existing files
+  - no new npm deps; no @earendil-works imports; `z-agent --help` shows --api
+    and ANTHROPIC_* env vars
+
+G. live network verification (DeepSeek, real API key in ~/.pillow/config.json)
+============================================================================
+aliases: deepseek (deepseek-chat, openai-completions),
+         deepseek-r (deepseek-reasoner, thinking:low),
+         deepseek-anth (deepseek-chat, anthropic-messages @ /anthropic)
+
+  z-agent -p --yes --model deepseek "Reply with exactly: ok"
+    -> ok                                                          PASS
+  z-agent -p --yes --model deepseek "...run ls via bash tool..."
+    -> tool_calls aggregated -> bash exec -> tool_result -> answer PASS
+  z-agent -p --yes --model deepseek-r "17*23? think briefly"
+    -> 391 (reasoning_effort=low accepted)                         PASS
+  z-agent -p --yes --model deepseek-anth "Reply with exactly: ok"
+    -> ok                       (anthropic-messages on /anthropic) PASS
+  z-agent -p --yes --model deepseek-anth "...use ls tool..."
+    -> tool_use -> ls -> tool_result -> answer                     PASS
+  z-agent -p --yes --model deepseek --api openai-responses "...bash echo..."
+    -> /responses served by DeepSeek; tool loop works             PASS
+  --api anthropic-messages on non-anthropic baseUrl -> 404 encoded
+    as [error], no crash; missing OPENAI_API_KEY -> preflight error PASS
+
+Note: DeepSeek serves all three dialects on one key. Anthropic compat baseUrl
+is https://api.deepseek.com/anthropic; responses path is {baseUrl}/responses.

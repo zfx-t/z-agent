@@ -12,3 +12,5 @@ coverage/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+.superpowers/
+garden-gpt-image-2/

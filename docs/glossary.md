@@ -64,19 +64,23 @@ Messages delivered only when the agent would otherwise stop (no more tools, no s
 
 ## Effect sandwich (L5)
 
-For each effect: **intent commit** → **effect** → **settle commit**. Crash recovery reads `op.state`. Implemented in `@z-agent/harness` (JSONL). (ADR-0010, ADR-0021)
+For each effect: **intent commit** → **effect** → **settle commit**. Crash recovery reads `op.state`. Implemented in `@z-agent/harness` (JSONL or SQLite backend). (ADR-0010, ADR-0021, ADR-0026)
 
 ## Semantic oracle
 
 pi `packages/agent` agent-loop / Agent behavior used as the correctness reference without importing pi packages. Deviations require an ADR. (ADR-0001, ADR-0008)
 
+## Provider api / StreamFn dispatch
+
+`Model.api` selects the wire dialect per call: `openai-responses` | `openai-completions` | `anthropic-messages`. `createProviderStream` routes on it; catalog entries and `--api` set it. (ADR-0027)
+
 ## Responses API path
 
-The single production HTTP stream implementation in `@z-agent/ai`: OpenAI Responses API streaming. (ADR-0005)
+The default production HTTP stream implementation in `@z-agent/ai`: OpenAI Responses API streaming. (ADR-0005)
 
 ## StreamFn (injection)
 
-Production uses Responses-backed `StreamFn`. Unit tests inject a private scripted `StreamFn` under `packages/agent/test/helpers/` — not a public package API.
+Production uses `createProviderStream` (per-`model.api` adapters). Unit tests inject a private scripted `StreamFn` under `packages/agent/test/helpers/` — not a public package API.
 
 ## prepareNextTurn
 
@@ -224,4 +228,4 @@ Project skills override user skills; `{cwd}/.agents` is not scanned. Skill
 
 ## op.state
 
-Per-operation durable counter written by `@z-agent/harness` (`intent` → `effect` → `done`). (ADR-0010, ADR-0021)
+Per-operation durable counter written by `@z-agent/harness` (`intent` → `effect` → `done`). JSONL per-op files or a single SQLite `op.state.db` via `--durable-backend`. (ADR-0010, ADR-0021, ADR-0026)

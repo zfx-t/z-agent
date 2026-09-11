@@ -17,7 +17,13 @@ export interface OpState<TIntent = unknown, TResult = unknown> {
 	updatedAt: number;
 }
 
-export class JsonlOpStore {
+export interface OpStore {
+	load<TIntent, TResult>(opId: string): Promise<OpState<TIntent, TResult> | undefined>;
+	commit<TIntent, TResult>(state: OpState<TIntent, TResult>): Promise<void>;
+	delete(opId: string): Promise<void>;
+}
+
+export class JsonlOpStore implements OpStore {
 	readonly dir: string;
 
 	constructor(dir: string) {

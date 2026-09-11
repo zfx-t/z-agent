@@ -13,10 +13,21 @@
 
 import type { AssistantMessageEventStream } from "./event-stream.ts";
 import { createAssistantMessageEventStream } from "./event-stream.ts";
+import {
+	applyParsedToolArguments,
+	createPendingOutput,
+	env,
+	formatError,
+	isAbortError,
+	normalizeToolCallIdParts,
+	type StreamingToolCall,
+	toolResultText,
+	trimTrailingSlash,
+} from "./provider-shared.ts";
+import { parseSseJson } from "./sse.ts";
 import type {
 	AssistantMessage,
 	Context,
-	Message,
 	Model,
 	StopReason,
 	StreamFn,
@@ -24,10 +35,8 @@ import type {
 	TextContent,
 	ThinkingContent,
 	Tool,
-	ToolCall,
 	Usage,
 } from "./types.ts";
-import { emptyUsage } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants + config
@@ -187,19 +196,6 @@ interface ResponsesStreamEvent {
 // Env / URL helpers
 // ---------------------------------------------------------------------------
 
-function env(name: string): string | undefined {
-	try {
-		const value = globalThis.process?.env?.[name];
-		return typeof value === "string" && value.length > 0 ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function trimTrailingSlash(url: string): string {
-	return url.endsWith("/") ? url.slice(0, -1) : url;
-}
-
 function resolveBaseUrl(model: Model, options?: OpenAIResponsesStreamOptions, config?: OpenAIResponsesConfig): string {
 	const raw =
 		options?.baseUrl ||
@@ -221,30 +217,6 @@ function responsesUrl(baseUrl: string): string {
 // ---------------------------------------------------------------------------
 // Message + tool conversion
 // ---------------------------------------------------------------------------
-
-function normalizeToolCallIdParts(id: string): { callId: string; itemId?: string } {
-	const pipe = id.indexOf("|");
-	if (pipe === -1) {
-		return { callId: id };
-	}
-	return { callId: id.slice(0, pipe), itemId: id.slice(pipe + 1) || undefined };
-}
-
-function toolResultText(msg: Extract<Message, { role: "toolResult" }>): string {
-	const parts = msg.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text);
-	let text: string;
-	if (parts.length > 0) {
-		text = parts.join("\n");
-	} else {
-		const hasImage = msg.content.some((c) => c.type === "image");
-		text = hasImage ? "(see attached image)" : "(no tool output)";
-	}
-	// Wire path has no separate is_error flag; surface agent errors in the output string.
-	if (msg.isError && !text.startsWith("Error:")) {
-		return `Error: ${text}`;
-	}
-	return text;
-}
 
 /** Convert internal Context messages to Responses `input` items. */
 export function convertResponsesMessages(context: Context): ResponsesInputItem[] {
@@ -403,136 +375,24 @@ export function buildResponsesBody(
 // ---------------------------------------------------------------------------
 
 /**
- * Parse an SSE byte stream into JSON event objects.
- * Supports `data:` lines (OpenAI Responses) and optional `event:` lines.
- * Ignores `[DONE]`.
+ * Parse an SSE byte stream into Responses event objects.
+ * Thin wrapper over the shared {@link parseSseJson} parser.
  */
-export async function* parseResponsesSse(
+export function parseResponsesSse(
 	body: ReadableStream<Uint8Array> | null,
 	signal?: AbortSignal,
 ): AsyncGenerator<ResponsesStreamEvent> {
-	if (!body) {
-		throw new Error("Response body is empty");
-	}
-
-	const reader = body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
-	let dataLines: string[] = [];
-
-	const flush = (): ResponsesStreamEvent | undefined => {
-		if (dataLines.length === 0) return undefined;
-		const raw = dataLines.join("\n").trim();
-		dataLines = [];
-		if (!raw || raw === "[DONE]") return undefined;
-		return JSON.parse(raw) as ResponsesStreamEvent;
-	};
-
-	// Unblock a pending read() when AbortSignal fires (custom fetch may ignore body signal).
-	const onAbort = (): void => {
-		void reader.cancel().catch(() => {});
-	};
-	if (signal) {
-		if (signal.aborted) {
-			await reader.cancel().catch(() => {});
-			throw new DOMException("The operation was aborted.", "AbortError");
-		}
-		signal.addEventListener("abort", onAbort, { once: true });
-	}
-
-	try {
-		while (true) {
-			if (signal?.aborted) {
-				throw new DOMException("The operation was aborted.", "AbortError");
-			}
-			const { done, value } = await reader.read();
-			if (done) break;
-			buffer += decoder.decode(value, { stream: true });
-
-			while (true) {
-				const newline = buffer.indexOf("\n");
-				if (newline === -1) break;
-				let line = buffer.slice(0, newline);
-				buffer = buffer.slice(newline + 1);
-				if (line.endsWith("\r")) line = line.slice(0, -1);
-
-				if (line === "") {
-					const event = flush();
-					if (event) yield event;
-					continue;
-				}
-				if (line.startsWith(":") || line.startsWith("event:")) {
-					continue;
-				}
-				if (line.startsWith("data:")) {
-					dataLines.push(line.slice(5).replace(/^\s/, ""));
-				}
-			}
-		}
-
-		buffer += decoder.decode();
-		if (buffer.length > 0) {
-			const trailing = buffer.replace(/\r$/, "");
-			if (trailing.startsWith("data:")) {
-				dataLines.push(trailing.slice(5).replace(/^\s/, ""));
-			}
-		}
-		const last = flush();
-		if (last) yield last;
-	} finally {
-		signal?.removeEventListener("abort", onAbort);
-		// Cancel so non-abort error paths do not leave the connection draining until GC.
-		try {
-			await reader.cancel();
-		} catch {
-			// already cancelled / closed
-		}
-		try {
-			reader.releaseLock();
-		} catch {
-			// lock released by cancel()
-		}
-	}
+	return parseSseJson<ResponsesStreamEvent>(body, signal);
 }
 
 // ---------------------------------------------------------------------------
 // Stream event → internal events
 // ---------------------------------------------------------------------------
 
-type StreamingToolCall = ToolCall & { partialJson?: string };
-
 type OutputSlot =
 	| { kind: "text"; block: TextContent; contentIndex: number }
 	| { kind: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { kind: "toolCall"; block: StreamingToolCall; contentIndex: number };
-
-type ParseToolArgsResult = { ok: true; args: Record<string, unknown> } | { ok: false; error: string };
-
-function parseToolArguments(json: string): ParseToolArgsResult {
-	const trimmed = json.trim();
-	if (!trimmed) return { ok: true, args: {} };
-	try {
-		const parsed: unknown = JSON.parse(trimmed);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return { ok: true, args: parsed as Record<string, unknown> };
-		}
-		const kind = Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed;
-		return { ok: false, error: `Tool call arguments must be a JSON object, got ${kind}` };
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		return { ok: false, error: `Invalid tool call arguments JSON: ${detail}` };
-	}
-}
-
-function applyParsedToolArguments(block: StreamingToolCall, argsJson: string): string | undefined {
-	const parsed = parseToolArguments(argsJson);
-	if (parsed.ok) {
-		block.arguments = parsed.args;
-		return undefined;
-	}
-	block.arguments = {};
-	return parsed.error;
-}
 
 function mapStopReason(
 	status: string | undefined,
@@ -879,35 +739,6 @@ async function processResponsesEvents(
 		output.stopReason = "error";
 		output.errorMessage = toolArgsError;
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Error helpers
-// ---------------------------------------------------------------------------
-
-function isAbortError(error: unknown, signal?: AbortSignal): boolean {
-	if (signal?.aborted) return true;
-	if (error instanceof DOMException && error.name === "AbortError") return true;
-	if (error instanceof Error && error.name === "AbortError") return true;
-	return false;
-}
-
-function formatError(error: unknown): string {
-	if (error instanceof Error) return error.message || error.name;
-	return String(error);
-}
-
-function createPendingOutput(model: Model): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: emptyUsage(),
-		stopReason: "pending",
-		timestamp: Date.now(),
-	};
 }
 
 // ---------------------------------------------------------------------------

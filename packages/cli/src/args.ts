@@ -1,4 +1,8 @@
+import type { ProviderApi } from "@z-agent/ai";
+
 export const DEFAULT_MODEL_ID = "gpt-4.1-mini";
+
+const PROVIDER_API_VALUES: readonly ProviderApi[] = ["openai-responses", "openai-completions", "anthropic-messages"];
 
 export interface CliArgs {
 	help: boolean;
@@ -9,8 +13,10 @@ export interface CliArgs {
 	listModels: boolean;
 	listSessions: boolean;
 	durable: boolean;
+	durableBackend: "jsonl" | "sqlite";
 	cwd?: string;
 	model?: string;
+	api?: ProviderApi;
 	sessionDir?: string;
 	session?: string;
 	resume: boolean;
@@ -31,8 +37,10 @@ export function parseArgs(argv: string[]): CliArgs {
 	let listModels = false;
 	let listSessions = false;
 	let durable = false;
+	let durableBackend: "jsonl" | "sqlite" = "jsonl";
 	let cwd: string | undefined;
 	let model: string | undefined;
+	let api: ProviderApi | undefined;
 	let sessionDir: string | undefined;
 	let session: string | undefined;
 	let resume = false;
@@ -67,6 +75,34 @@ export function parseArgs(argv: string[]): CliArgs {
 		}
 		if (arg === "--durable") {
 			durable = true;
+			continue;
+		}
+		if (arg === "--durable-backend") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				error = `Missing value for ${arg}`;
+				break;
+			}
+			if (value !== "jsonl" && value !== "sqlite") {
+				error = `Invalid value for ${arg}`;
+				break;
+			}
+			durableBackend = value;
+			i += 1;
+			continue;
+		}
+		if (arg === "--api") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				error = `Missing value for ${arg}`;
+				break;
+			}
+			if (!PROVIDER_API_VALUES.includes(value as ProviderApi)) {
+				error = `Invalid value for ${arg}`;
+				break;
+			}
+			api = value as ProviderApi;
+			i += 1;
 			continue;
 		}
 		if (arg === "--list-models") {
@@ -140,8 +176,10 @@ export function parseArgs(argv: string[]): CliArgs {
 		listModels,
 		listSessions,
 		durable,
+		durableBackend,
 		cwd,
 		model,
+		api,
 		sessionDir,
 		session,
 		resume,
@@ -164,7 +202,8 @@ Usage:
 
 Flags:
   --cwd <dir>        Working directory
-  --model <id>       Model id
+  --model <id>       Model id or catalog alias
+  --api <api>        Provider api: openai-responses (default) | openai-completions | anthropic-messages
   --yes              Skip tool confirmation
   --no-jail          Allow paths outside cwd
   -p, --print        Print mode
@@ -175,7 +214,8 @@ Flags:
   (TUI also offers a session picker and /sessions)
   --session-dir <d>  Session storage directory
   --extension <p>    Load an extension module
-  --durable          Use L5 harness (JSONL op.state)
+  --durable          Use L5 harness (op.state)
+  --durable-backend <b>  op.state backend: jsonl (default) | sqlite
   --list-models      List configured model aliases
   --list-sessions    List sessions for --cwd
   --context-window <n>  Override context window tokens
@@ -186,8 +226,10 @@ Interactive commands:
   Ctrl+P or /commands  Search available TUI commands
 
 Env:
-  OPENAI_API_KEY    API key (or config.json apiKey)
+  OPENAI_API_KEY    API key for openai-responses/openai-completions (or config.json apiKey)
   OPENAI_BASE_URL   Optional
+  ANTHROPIC_API_KEY API key for anthropic-messages (or config.json apiKey)
+  ANTHROPIC_BASE_URL Optional
   OPENAI_MODEL      Alias or raw model id
   OPENAI_CONTEXT_WINDOW  Optional context window
   OPENAI_MAX_TOKENS      Optional max output tokens
