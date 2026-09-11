@@ -249,7 +249,9 @@ describe("scripted TUI smoke", () => {
 				ok: true,
 				checkpoints: [{ id: "n1", label: "user: hi", depth: 0, onLivePath: true, isLeaf: true }],
 			}),
-			onRestoreCheckpoint: async () => [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }],
+			onRestoreCheckpoint: async () => [
+				{ role: "user", content: [{ type: "text", text: "restored-user-turn" }], timestamp: 1 },
+			],
 		});
 		tui.pushKey({ type: "char", value: "/sessions" });
 		tui.pushKey({ type: "enter" });
@@ -262,5 +264,6 @@ describe("scripted TUI smoke", () => {
 		tui.pushKey({ type: "enter" });
 		await running;
 		expect(strip(io.writes)).toContain("restored sess-1");
+		expect(strip(io.writes)).toContain("restored-user-turn");
 	});
 });

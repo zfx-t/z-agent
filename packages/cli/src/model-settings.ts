@@ -166,6 +166,26 @@ export function formatListModelsLine(input: {
 	return `${input.alias}\t${input.id}\t${window ?? "-"}\t${tokens ?? "-"}\t${input.thinking ?? "-"}${marker}`;
 }
 
+/** Single-row model picker item: aligned alias, wire/api facts, markers. */
+export function formatModelPickerRow(input: {
+	alias: string;
+	id: string;
+	api?: string;
+	contextWindow?: number;
+	maxTokens?: number;
+	thinking?: ThinkingLevel;
+	isCurrent?: boolean;
+	isDefault?: boolean;
+	aliasWidth?: number;
+}): string {
+	const alias = input.alias.padEnd(input.aliasWidth ?? input.alias.length);
+	const api = input.api ? ` ${input.api}` : "";
+	const window = optionalPositive(input.contextWindow);
+	const tokens = optionalPositive(input.maxTokens);
+	const marks = `${input.isDefault ? " *" : ""}${input.isCurrent ? " (current)" : ""}`;
+	return `${alias}  ${input.id}${api}  ctx ${window === undefined ? "-" : formatCompactContext(window)}  max ${tokens ?? "-"}  think ${input.thinking ?? "-"}${marks}`;
+}
+
 export function reduceModelSettings(view: ModelSettingsView, args: string): ModelSettingsResult {
 	const parsed = parseModelCommand(args);
 	if (parsed.kind === "error") {

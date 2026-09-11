@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	formatCompactContext,
 	formatListModelsLine,
+	formatModelPickerRow,
 	formatModelSettings,
 	formatRuntimeStatus,
 	MODEL_COMMAND_USAGE,
@@ -83,6 +84,23 @@ describe("formatters", () => {
 			}),
 		).toBe("fast\tgpt-4.1-mini\t128000\t4096\toff *");
 		expect(formatListModelsLine({ alias: "smart", id: "gpt-5", thinking: "high" })).toBe("smart\tgpt-5\t-\t-\thigh");
+	});
+
+	it("renders a model picker row with alias padding and markers", () => {
+		expect(
+			formatModelPickerRow({
+				alias: "deepseek",
+				id: "deepseek-chat",
+				api: "openai-completions",
+				contextWindow: 64_000,
+				maxTokens: 8_192,
+				thinking: "low",
+				isCurrent: true,
+				isDefault: true,
+				aliasWidth: 10,
+			}),
+		).toBe("deepseek    deepseek-chat openai-completions  ctx 64k  max 8192  think low * (current)");
+		expect(formatModelPickerRow({ alias: "raw", id: "gpt-5" })).toBe("raw  gpt-5  ctx -  max -  think -");
 	});
 });
 

@@ -18,6 +18,8 @@ export type Key =
 	| { type: "deleteWordForward" }
 	| { type: "deleteWordBack" }
 	| { type: "report" }
+	| { type: "wheelUp" }
+	| { type: "wheelDown" }
 	| { type: "up" }
 	| { type: "down" }
 	| { type: "left" }
@@ -28,6 +30,9 @@ const PASTE_END = "\x1b[201~";
 const ESC = "\u001b";
 const DSR_REPORT = new RegExp(`^${ESC}\\[\\d+;\\d+R`);
 const DSR_PARTIAL = new RegExp(`^${ESC}\\[\\d*(;\\d*)?$`);
+/** SGR mouse report: ESC [ < Cb ; Cx ; Cy (M press | m release). */
+const SGR_MOUSE = new RegExp(`^${ESC}\\[<(\\d+);(\\d+);(\\d+)[Mm]`);
+const SGR_MOUSE_PARTIAL = new RegExp(`^${ESC}\\[<\\d*(;\\d*){0,2}$`);
 const ESCAPE_SEQUENCES = [
 	"\x1b[13;2u",
 	"\x1b[27;2;13~",
@@ -48,6 +53,10 @@ const ESCAPE_SEQUENCES = [
 	"\x1b[D",
 	"\x1b[H",
 	"\x1b[F",
+	"\x1bOA",
+	"\x1bOB",
+	"\x1bOC",
+	"\x1bOD",
 	"\x1bOH",
 	"\x1bOF",
 	"\x1b\x7f",
@@ -80,16 +89,16 @@ export function parseKey(input: string): Key | undefined {
 	if (input === "\x1b") {
 		return { type: "escape" };
 	}
-	if (input === "\x1b[A") {
+	if (input === "\x1b[A" || input === "\x1bOA") {
 		return { type: "up" };
 	}
-	if (input === "\x1b[B") {
+	if (input === "\x1b[B" || input === "\x1bOB") {
 		return { type: "down" };
 	}
-	if (input === "\x1b[C") {
+	if (input === "\x1b[C" || input === "\x1bOC") {
 		return { type: "right" };
 	}
-	if (input === "\x1b[D") {
+	if (input === "\x1b[D" || input === "\x1bOD") {
 		return { type: "left" };
 	}
 	if (input === "\x1b[3~") {
@@ -165,7 +174,15 @@ function takeNextKey(input: string): { key: Key; length: number } | undefined {
 		if (dsr) {
 			return { key: { type: "report" }, length: dsr[0].length };
 		}
-		if (DSR_PARTIAL.test(input)) {
+		const mouse = SGR_MOUSE.exec(input);
+		if (mouse) {
+			const code = Number(mouse[1]);
+			if ((code & 64) !== 0) {
+				return { key: { type: (code & 1) === 1 ? "wheelDown" : "wheelUp" }, length: mouse[0].length };
+			}
+			return { key: { type: "report" }, length: mouse[0].length };
+		}
+		if (DSR_PARTIAL.test(input) || SGR_MOUSE_PARTIAL.test(input)) {
 			return undefined;
 		}
 		for (const sequence of ESCAPE_SEQUENCES) {

@@ -84,7 +84,12 @@ Built-ins include `/exit`, `/new`, `/reset`, `/clear`, `/compact`, `/sessions`
 (`/resume`), `/status`, `/model`, `/commands`, `/skills`, `/skill`, and `/reload`.
 `/sessions` lists saved files then restores a checkpoint (`branch()`); malformed
 JSONL is refused. `/status` includes thinking, context window, max tokens, and persist mode. The
-TUI session picker runs at start when sessions already exist for the cwd.
+TUI always opens a fresh session and notes how many saved sessions exist;
+`/sessions` (or `--resume` / `--session <id>`) goes back to an earlier one.
+Bare `/model` opens a picker over the catalog aliases and then the thinking
+level; the alias switch is session-scoped while a changed thinking level writes
+back to the alias in `~/.pillow/config.json`. `/model context|max-tokens|thinking`
+edits fields directly.
 
 The TUI keeps its multiline editor available while the agent is working.
 `Enter` submits the next instruction, `Shift+Enter` adds a line, and `Ctrl+C`
@@ -94,7 +99,8 @@ inspector.
 
 When the editor's first token starts with `/`, it ranks built-in and skill-name
 candidates by exact, prefix, substring, then fuzzy character match. `Tab`
-accepts or cycles forward, `Shift+Tab` cycles backward, and `Esc` cancels the
+accepts or cycles forward, `Shift+Tab` cycles backward, `Up`/`Down` move the
+selection, and `Esc` cancels the
 popup without invoking anything.
 
 `Ctrl+P` opens the command palette and inserts the selected token into the

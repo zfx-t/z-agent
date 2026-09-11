@@ -21,6 +21,7 @@ describe("keys + editor + confirm", () => {
 		expect(parseKey("\x1b[13;2u")).toEqual({ type: "newline" });
 		expect(parseKey("\x03")).toEqual({ type: "ctrl", value: "c" });
 		expect(parseKey("\x1b[A")).toEqual({ type: "up" });
+		expect(parseKey("\x1bOA")).toEqual({ type: "up" });
 		expect(parseKey("\x1b[200~pasted text\x1b[201~")).toEqual({ type: "paste", value: "pasted text" });
 		expect(parseKey("hi")).toEqual({ type: "char", value: "hi" });
 		expect(parseKey("\x1b[1;5D")).toEqual({ type: "wordLeft" });
@@ -37,6 +38,26 @@ describe("keys + editor + confirm", () => {
 		});
 		expect(parseInputChunk("\x1b[200~partial")).toEqual({ keys: [], remainder: "\x1b[200~partial" });
 		expect(parseInputChunk("\x1b[")).toEqual({ keys: [], remainder: "\x1b[" });
+	});
+
+	it("parses SGR mouse wheel reports and swallows clicks", () => {
+		expect(parseInputChunk("\x1b[<64;80;10M")).toEqual({
+			keys: [{ type: "wheelUp" }],
+			remainder: "",
+		});
+		expect(parseInputChunk("\x1b[<65;1;1M")).toEqual({
+			keys: [{ type: "wheelDown" }],
+			remainder: "",
+		});
+		expect(parseInputChunk("\x1b[<68;1;1M")).toEqual({
+			keys: [{ type: "wheelUp" }],
+			remainder: "",
+		});
+		expect(parseInputChunk("\x1b[<0;5;5M\x1b[<0;5;5m")).toEqual({
+			keys: [{ type: "report" }, { type: "report" }],
+			remainder: "",
+		});
+		expect(parseInputChunk("\x1b[<64")).toEqual({ keys: [], remainder: "\x1b[<64" });
 	});
 
 	it("edits around the cursor and submits", () => {
@@ -500,6 +521,31 @@ describe("renderFrame", () => {
 		expect(cycledFrame).not.toContain("/command-0");
 	});
 
+	it("keeps a gap between the longest completion token and its description", () => {
+		const frame = renderFrame(
+			{
+				status: "model=gpt",
+				transcript: [],
+				editorLines: ["/s|"],
+				completion: {
+					items: [
+						{ token: "/sessions", description: "Browse sessions", kind: "command" },
+						{ token: "/reset", description: "Reset context", kind: "command" },
+					],
+					index: 0,
+					tokenStart: 0,
+					tokenEnd: 2,
+				},
+				streaming: false,
+				colors: false,
+			},
+			80,
+			24,
+		).join("\n");
+		expect(frame).toContain("> /sessions  Browse sessions");
+		expect(frame).toContain(" /reset     Reset context");
+	});
+
 	it("renders assistant markdown while leaving user text literal", () => {
 		const frame = renderFrame(
 			{
@@ -956,6 +1002,123 @@ describe("InteractiveTui", () => {
 		}
 		tui.pushKey({ type: "enter" });
 		await expect(prompt).resolves.toBe("/command-7 keep");
+		tui.close();
+	});
+
+	it("navigates slash completions with arrow keys and still submits", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({
+			stdin,
+			stdout,
+			completionCandidates: () => [
+				{ token: "/model", description: "Model settings", kind: "command" },
+				{ token: "/new", description: "New conversation", kind: "command" },
+				{ token: "/status", description: "Status", kind: "command" },
+			],
+		});
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "/" });
+		tui.pushKey({ type: "down" });
+		tui.pushKey({ type: "down" });
+		tui.pushKey({ type: "up" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("/new");
+
+		const wrapped = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "/" });
+		tui.pushKey({ type: "up" });
+		tui.pushKey({ type: "enter" });
+		await expect(wrapped).resolves.toBe("/status");
+		tui.close();
+	});
+
+	it("keeps arrow-key history recall when no completion is open", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({
+			stdin,
+			stdout,
+			completionCandidates: () => [{ token: "/model", description: "Model settings", kind: "command" }],
+		});
+		const first = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "plain text" });
+		tui.pushKey({ type: "enter" });
+		await expect(first).resolves.toBe("plain text");
+
+		const recalled = tui.readPrompt();
+		tui.pushKey({ type: "up" });
+		tui.pushKey({ type: "enter" });
+		await expect(recalled).resolves.toBe("plain text");
+		tui.close();
+	});
+
+	it("scrolls the transcript with the mouse wheel in editor focus", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		for (let index = 0; index < 40; index += 1) {
+			tui.appendLine(`old message ${index}`);
+		}
+		const lastFrame = () => stripAnsi(writes[writes.length - 1] ?? "");
+		expect(lastFrame()).toContain("old message 39");
+		expect(lastFrame()).not.toContain("old message 0");
+
+		tui.pushKey({ type: "wheelUp" });
+		tui.pushKey({ type: "wheelUp" });
+		expect(lastFrame()).not.toContain("old message 39");
+
+		tui.pushKey({ type: "wheelDown" });
+		tui.pushKey({ type: "wheelDown" });
+		expect(lastFrame()).toContain("old message 39");
+		tui.close();
+	});
+
+	it("moves the picker selection with the mouse wheel", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout });
+		const pick = tui.pickFromList("Levels", ["off", "low", "high"], { initialIndex: 0 });
+		tui.pushKey({ type: "wheelDown" });
+		tui.pushKey({ type: "wheelDown" });
+		tui.pushKey({ type: "wheelUp" });
+		tui.pushKey({ type: "enter" });
+		await expect(pick).resolves.toBe(1);
+		tui.close();
+	});
+
+	it("pre-highlights a picker row with initialIndex", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout });
+		const pick = tui.pickFromList("Thinking", ["off", "low", "high"], { initialIndex: 1 });
+		tui.pushKey({ type: "down" });
+		tui.pushKey({ type: "enter" });
+		await expect(pick).resolves.toBe(2);
 		tui.close();
 	});
 

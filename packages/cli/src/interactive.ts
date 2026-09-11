@@ -1,4 +1,4 @@
-import type { Agent, AgentEvent, AgentMessage, AgentToolResult } from "@z-agent/agent";
+import type { Agent, AgentEvent, AgentMessage } from "@z-agent/agent";
 import type { InteractiveTui } from "@z-agent/tui";
 import { type CommandRegistry, createRegistry, runCommand } from "./command-registry.ts";
 import type { CommandContext } from "./command-types.ts";
@@ -6,8 +6,7 @@ import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
 import type { SessionInspectResult } from "./sessions.ts";
 import type { SkillInputCoordinator } from "./skill-commands.ts";
 import { parseSlashInput } from "./slash.ts";
-
-const TOOL_RESULT_PREVIEW_CHARS = 720;
+import { compactDetails, toolResultPreview } from "./transcript.ts";
 
 export function submitTuiInputDuringRun(
 	target: Pick<Agent, "steer"> | Pick<SkillInputCoordinator, "enqueueDuringRun">,
@@ -54,28 +53,6 @@ export function subscribeTui(agent: Agent, tui: InteractiveTui): () => void {
 			);
 		}
 	});
-}
-
-function toolResultPreview(result: AgentToolResult): string {
-	const text = result.content
-		.filter((block): block is { type: "text"; text: string } => block.type === "text")
-		.map((block) => block.text)
-		.join("")
-		.trim();
-	return text.length <= TOOL_RESULT_PREVIEW_CHARS ? text : `${text.slice(0, TOOL_RESULT_PREVIEW_CHARS)}...`;
-}
-
-function compactDetails(details: unknown): string | undefined {
-	if (details === undefined || details === null) {
-		return undefined;
-	}
-	let text: string;
-	try {
-		text = JSON.stringify(details) ?? "";
-	} catch {
-		text = String(details);
-	}
-	return text.length <= 520 ? text : `${text.slice(0, 520)}...`;
 }
 
 export async function runInteractive(options: {

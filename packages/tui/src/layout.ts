@@ -403,7 +403,8 @@ function completionLines(
 	return visible.map((candidate, offset) => {
 		const selected = start + offset === selectedIndex;
 		const label = candidate.kind === "command" ? "command" : "skill";
-		const head = `${selected ? ">" : " "} ${candidate.token.padEnd(tokenWidth)}`;
+		const pad = " ".repeat(Math.max(0, tokenWidth - visibleWidth(candidate.token)) + 2);
+		const head = `${selected ? ">" : " "} ${candidate.token}${pad}`;
 		const tail = `  [${label}]`;
 		const descWidth = Math.max(0, width - visibleWidth(head) - visibleWidth(tail));
 		const content = `${head}${clip(clean(candidate.description).replace(/\n/gu, " "), descWidth)}${tail}`;
@@ -536,16 +537,16 @@ function inputHint(width: number, state: TuiFrameState, scroll: TuiScrollInfo | 
 		}
 	} else if (state.completion !== undefined) {
 		if (width >= 72) {
-			hint = " tab cycle · shift+tab reverse · esc cancel · enter send";
+			hint = " up/down select · tab cycle · esc cancel · enter send";
 		} else if (width >= 54) {
-			hint = " tab cycle · shift+tab reverse · esc cancel";
+			hint = " up/down select · tab cycle · esc cancel";
 		} else {
-			hint = " tab cycle · esc cancel";
+			hint = " up/down select · esc cancel";
 		}
 	} else {
 		const interrupt = state.streaming ? "ctrl+c interrupt" : "ctrl+c exit";
 		if (width >= 112) {
-			hint = `${scrollTag}enter send · shift+enter newline · tab transcript · ctrl+p commands · ctrl+t thinking · ${interrupt}`;
+			hint = `${scrollTag}enter send · shift+enter newline · tab transcript · ctrl+p commands · ctrl+t thinking · wheel scroll · ${interrupt}`;
 		} else if (width >= 100) {
 			hint = `${scrollTag}enter send · shift+enter newline · tab transcript · ctrl+p commands · ${interrupt}`;
 		} else if (width >= 72) {

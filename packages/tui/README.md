@@ -38,17 +38,20 @@ deletes a word forward, `Alt+Backspace` and `Ctrl+W` delete backward, and
 Keys: `Enter` sends, `Shift+Enter` inserts a newline, `Ctrl+C` interrupts an
 active run, and `Ctrl+T` toggles the latest thinking entry. Outside slash
 completion, `Tab` moves between the editor and transcript and `PageUp`/`PageDown`
-scroll the transcript from either focus; transcript focus uses `Up`/`Down` to
+scroll the transcript from either focus; the mouse wheel also scrolls the
+transcript in any focus (and moves the selection inside pickers) — reporting
+is enabled via SGR 1006/1000 and can be disabled with `Z_AGENT_MOUSE=off`.
+Transcript focus uses `Up`/`Down` to
 select tools, `Enter` to expand details, `Left`/`Right` to change available
-views, `g`/`G` for top/latest, and `Esc` to return to the editor. The session
-and command pickers remain keyboard-only. Tool details stay in the
-single-column transcript at every supported width.
+views, `g`/`G` for top/latest, and `Esc` to return to the editor. Tool details
+stay in the single-column transcript at every supported width.
 
 When the editor's first token starts with `/`, a fixed-height popup combines
 built-in commands and skill names. Candidates rank by exact, case-insensitive
 prefix, substring, then ordered fuzzy character match. `Tab` accepts the best
 candidate and cycles forward on repeated presses, `Shift+Tab` cycles backward,
-and `Esc` cancels. Only the command token is replaced, so arguments and
+`Up`/`Down` move directly through candidates, and `Esc` cancels. Only the
+command token is replaced, so arguments and
 cursor-relative text stay intact. Selecting a candidate never activates a skill
 or calls the model.
 

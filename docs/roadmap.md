@@ -46,7 +46,7 @@ JSONL backend (ADR-0021) and SQLite backend via `node:sqlite` behind
 
 ## Phase 2.8 — Model settings inspect and edit (done)
 
-`/status` and `/model` show `contextWindow`, `maxTokens`, and `thinking`. Alias-backed edits persist to `~/.pillow/config.json`. `--context-window` / `--max-tokens` and matching env vars complete ADR-0022 numeric precedence.
+`/status` and `/model` show `contextWindow`, `maxTokens`, and `thinking`. Alias-backed edits persist to `~/.pillow/config.json`. `--context-window` / `--max-tokens` and matching env vars complete ADR-0022 numeric precedence. Bare `/model` opens a picker to switch catalog alias and thinking level mid-session.
 
 ## Phase 2.9 — TUI assistant Markdown (done)
 
@@ -54,7 +54,7 @@ Interactive assistant rows render GFM (headings, emphasis, lists, fences, links,
 
 ## Phase 2.10 — Session checkpoints (R4 first cut) (done)
 
-`/sessions` and the startup picker restore a node through `branch()`. Malformed JSONL is refused instead of truncated. Tree chrome beyond picker rows is later. (ADR-0024)
+`/sessions` restores a node through `branch()`; startup always opens a fresh session. Malformed JSONL is refused instead of truncated. Tree chrome beyond picker rows is later. (ADR-0024)
 
 ## Phase 2.11 — Command registry and extension surface (done)
 

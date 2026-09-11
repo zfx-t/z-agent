@@ -1,17 +1,23 @@
 const ENTER_ALT = "\x1b[?1049h\x1b[?2004h\x1b[?25l";
 const LEAVE_ALT = "\x1b[?25h\x1b[?2004l\x1b[?1049l";
+/** SGR mouse reporting (1006) + button/wheel tracking (1000). */
+const MOUSE_ON = "\x1b[?1006h\x1b[?1000h";
+const MOUSE_OFF = "\x1b[?1000l\x1b[?1006l";
 
 export class LineScreen {
 	private previous: string[] = [];
 	private readonly write: (chunk: string) => void;
+	private readonly mouse: boolean;
 	private entered = false;
 
 	constructor(
 		write: (chunk: string) => void = (chunk) => {
 			process.stdout.write(chunk);
 		},
+		options: { mouse?: boolean } = {},
 	) {
 		this.write = write;
+		this.mouse = options.mouse !== false;
 	}
 
 	enter(): void {
@@ -20,7 +26,7 @@ export class LineScreen {
 		}
 		this.entered = true;
 		this.previous = [];
-		this.write(ENTER_ALT);
+		this.write(ENTER_ALT + (this.mouse ? MOUSE_ON : ""));
 	}
 
 	leave(): void {
@@ -28,7 +34,7 @@ export class LineScreen {
 			return;
 		}
 		this.entered = false;
-		this.write(LEAVE_ALT);
+		this.write((this.mouse ? MOUSE_OFF : "") + LEAVE_ALT);
 		this.previous = [];
 	}
 

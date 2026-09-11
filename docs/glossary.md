@@ -128,7 +128,7 @@ Key in `~/.pillow/config.json` `models`. `--model` / `OPENAI_MODEL` resolve alia
 
 ## Model settings
 
-Live inspect/edit surface for the resolved catalog model: `contextWindow`, `maxTokens`, and `thinking`. `/model` updates the current Agent and skills budget. Alias-backed values write `~/.pillow/config.json`. Raw model ids stay session-only. (ADR-0022)
+Live inspect/edit surface for the resolved catalog model: `contextWindow`, `maxTokens`, and `thinking`. `/model` updates the current Agent and skills budget; bare `/model` opens the catalog picker (alias, then thinking level) and switches the session model including `api`/`apiKey`. Alias-backed values write `~/.pillow/config.json`; the alias switch itself stays session-only. Raw model ids stay session-only. (ADR-0022)
 
 ## Session tree
 

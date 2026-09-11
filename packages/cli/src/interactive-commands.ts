@@ -3,6 +3,7 @@ import type { CommandContext, CommandRunResult, InteractiveCommand } from "./com
 import { parseModelCommand } from "./model-settings.ts";
 import { formatCheckpointRow, formatSessionHealth } from "./sessions.ts";
 import { runReloadCommand, runSkillCommand, runSkillsCommand } from "./skill-handlers.ts";
+import { replayTranscript } from "./transcript.ts";
 
 export type {
 	CommandContext,
@@ -143,6 +144,7 @@ async function runSessions(context: CommandContext): Promise<CommandRunResult> {
 		context.agent.reset();
 		context.agent.state.messages = messages;
 		context.tui.clearTranscript();
+		replayTranscript(context.tui, messages);
 		context.tui.appendLine(`[sessions] restored ${sessionId} at ${restoredLabel}`);
 		return { kind: "continue" };
 	}
@@ -152,6 +154,8 @@ async function runSessions(context: CommandContext): Promise<CommandRunResult> {
 	const messages = await context.onLoadSession(sessionId);
 	context.agent.reset();
 	context.agent.state.messages = messages;
+	context.tui.clearTranscript();
+	replayTranscript(context.tui, messages);
 	context.tui.appendLine(`[sessions] loaded ${sessionId}`);
 	return { kind: "continue" };
 }

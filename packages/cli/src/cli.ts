@@ -19,6 +19,7 @@ import {
 	NO_MODEL_WARNING,
 	persistAliasSettings,
 	resolveModel,
+	resolveThinking,
 } from "./config.ts";
 import { createConfirmGate } from "./confirm.ts";
 import { createExtensionHost } from "./extension-host.ts";
@@ -26,14 +27,21 @@ import { composeBefore, discoverExtensionPaths } from "./extensions.ts";
 import { runInteractive, submitTuiInputDuringRun } from "./interactive.ts";
 import { INTERACTIVE_COMMANDS } from "./interactive-commands.ts";
 import { loadKeymap } from "./keys-config.ts";
-import { formatListModelsLine, formatRuntimeStatus, modelSettingsView, reduceModelSettings } from "./model-settings.ts";
+import {
+	formatListModelsLine,
+	formatModelPickerRow,
+	formatModelSettings,
+	formatRuntimeStatus,
+	MODEL_THINKING_LEVELS,
+	modelSettingsView,
+	reduceModelSettings,
+} from "./model-settings.ts";
 import { prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
 import { runPrint } from "./print.ts";
 import {
 	appendMessage,
 	branch,
 	createSession,
-	formatCheckpointRow,
 	formatSessionHealth,
 	inspectSession,
 	inspectSessionCheckpoints,
@@ -54,6 +62,7 @@ import {
 	safeSegmentText,
 } from "./status-segments.ts";
 import { buildCodingSystemPrompt } from "./system-prompt.ts";
+import { replayTranscript } from "./transcript.ts";
 import { askYesNo, ensureProjectTrust } from "./trust.ts";
 
 async function readStdinText(): Promise<string> {
@@ -80,28 +89,6 @@ async function openHealthySession(cwd: string, id: string, root: string | undefi
 	}
 	console.error(`[sessions] ${formatSessionHealth(health)}`);
 	return createSession(cwd);
-}
-
-async function pickCheckpointSession(tui: InteractiveTui, loaded: SessionRecord): Promise<SessionRecord | undefined> {
-	const inspect = inspectSessionCheckpoints(loaded);
-	if (!inspect.ok) {
-		tui.appendNotice("error", `[sessions] ${formatSessionHealth(inspect)}`);
-		return undefined;
-	}
-	if (inspect.checkpoints.length === 0) {
-		return loaded;
-	}
-	const pick = await tui.pickFromList("Restore checkpoint", inspect.checkpoints.map(formatCheckpointRow), {
-		cancelValue: -1,
-	});
-	if (pick < 0) {
-		return undefined;
-	}
-	const checkpoint = inspect.checkpoints[pick];
-	if (!checkpoint) {
-		return undefined;
-	}
-	return branch(loaded, checkpoint.id);
 }
 
 function completionCandidates(
@@ -370,19 +357,19 @@ async function main(): Promise<void> {
 			})
 		: undefined;
 
+	// Fresh session by default; earlier sessions are reachable via /sessions.
 	if (tui && !args.session && !args.resume && !args.continueSession) {
 		const ids = await listSessionIds(cwd, sessionRoot);
 		if (ids.length > 0) {
 			tui.start();
-			const index = await tui.pickFromList("Sessions", ["(new session)", ...ids], { cancelValue: 0 });
-			if (index > 0) {
-				const loaded = await loadSession(cwd, ids[index - 1] ?? "", sessionRoot);
-				const picked = await pickCheckpointSession(tui, loaded);
-				if (picked) {
-					session = picked;
-					await skillManager.setSession(session);
-				}
-			}
+			tui.appendLine(`[sessions] ${ids.length} saved; /sessions to resume`);
+		}
+	} else if (tui) {
+		const restored = messagesOnLeaf(session);
+		if (restored.length > 0) {
+			tui.start();
+			replayTranscript(tui, restored);
+			tui.appendLine(`[sessions] resumed ${session.header.id.slice(0, 12)}`);
 		}
 	}
 
@@ -495,6 +482,91 @@ async function main(): Promise<void> {
 		}
 		writeSkillStatus("info", result.text);
 	};
+	/** `/model` with no args: pick an alias, then its thinking level, apply both. */
+	const pickModelSettings = async (): Promise<void> => {
+		const catalog = loaded.catalog;
+		const aliases = catalog ? Object.keys(catalog.models) : [];
+		if (!tui || !catalog || aliases.length === 0) {
+			writeSkillStatus("info", formatModelSettings(settings));
+			return;
+		}
+		const aliasWidth = Math.max(...aliases.map((alias) => alias.length));
+		const modelIndex = await tui.pickFromList(
+			"Model",
+			aliases.map((alias) => {
+				const entry = catalog.models[alias];
+				return formatModelPickerRow({
+					alias,
+					id: entry?.id ?? "unknown",
+					api: entry?.api,
+					contextWindow: entry?.contextWindow,
+					maxTokens: entry?.maxTokens,
+					thinking: entry ? resolveThinking(entry.id, entry.thinking) : undefined,
+					isCurrent: alias === settings.alias,
+					isDefault: alias === catalog.defaultModel,
+					aliasWidth,
+				});
+			}),
+			{ cancelValue: -1, initialIndex: Math.max(0, aliases.indexOf(settings.alias ?? "")) },
+		);
+		if (modelIndex < 0) {
+			writeSkillStatus("info", formatModelSettings(settings));
+			return;
+		}
+		const pickedAlias = aliases[modelIndex] ?? "";
+		const next = resolveModel(pickedAlias, catalog);
+		if (!next.hasModel) {
+			writeSkillStatus("error", next.warning);
+			return;
+		}
+		const thinkingIndex = await tui.pickFromList(
+			`Thinking (${pickedAlias})`,
+			MODEL_THINKING_LEVELS.map((level) => (level === next.thinking ? `${level} (current)` : level)),
+			{ cancelValue: -1, initialIndex: Math.max(0, MODEL_THINKING_LEVELS.indexOf(next.thinking)) },
+		);
+		if (thinkingIndex < 0) {
+			writeSkillStatus("info", formatModelSettings(settings));
+			return;
+		}
+		const thinking = MODEL_THINKING_LEVELS[thinkingIndex] ?? next.thinking;
+		settings = modelSettingsView({
+			hasModel: true,
+			alias: pickedAlias,
+			id: next.id,
+			api: next.api,
+			thinking,
+			contextWindow: next.contextWindow,
+			maxTokens: next.maxTokens,
+		});
+		agent.state.model = {
+			id: next.id,
+			name: next.id,
+			api: next.api,
+			provider: providerForApi(next.api),
+			baseUrl: next.baseUrl ?? "",
+			input: ["text", "image"],
+			contextWindow: next.contextWindow,
+			maxTokens: next.maxTokens,
+		};
+		agent.apiKey = next.apiKey;
+		agent.state.thinkingLevel = thinking;
+		agent.maxTokens = next.maxTokens;
+		skillManager.setBudget({ contextWindow: next.contextWindow ?? 0, maxTokens: next.maxTokens });
+		interactiveOptions.hasModel = Boolean(agent.apiKey);
+		if (!agent.apiKey) {
+			const keyEnv = next.api === "anthropic-messages" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+			writeSkillStatus("warning", `[model] ${pickedAlias} has no api key (set ${keyEnv} or config.json apiKey)`);
+		}
+		let text = formatModelSettings(settings);
+		if (thinking !== next.thinking) {
+			try {
+				await persistAliasSettings(userPillow, pickedAlias, { thinking });
+			} catch (error) {
+				text = `${text} persist=failed (${error instanceof Error ? error.message : String(error)})`;
+			}
+		}
+		writeSkillStatus("info", text);
+	};
 	input = new SkillInputCoordinator({
 		agent,
 		manager: skillManager,
@@ -590,7 +662,7 @@ async function main(): Promise<void> {
 	if (!tui) {
 		process.exit(1);
 	}
-	await runInteractive({
+	const interactiveOptions: Parameters<typeof runInteractive>[0] = {
 		agent,
 		tui,
 		hasModel: resolved.hasModel && Boolean(apiKey),
@@ -641,9 +713,14 @@ async function main(): Promise<void> {
 				cwd,
 			}),
 		onModel: async (modelArgs) => {
+			if (modelArgs.trim().length === 0) {
+				await pickModelSettings();
+				return;
+			}
 			await applySettings(modelArgs);
 		},
-	});
+	};
+	await runInteractive(interactiveOptions);
 	await persist();
 	abort.detach();
 }

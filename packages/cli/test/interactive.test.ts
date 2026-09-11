@@ -162,6 +162,11 @@ describe("interactive TUI adaptation", () => {
 				lines.push(line);
 			},
 			appendNotice: vi.fn(),
+			appendUser: vi.fn(),
+			appendAssistantDelta: vi.fn(),
+			appendThinkingDelta: vi.fn(),
+			appendToolStart: vi.fn(),
+			appendToolEnd: vi.fn(),
 			clearTranscript: vi.fn(),
 			readPrompt: async () => prompts[promptIndex++] ?? null,
 			pickFromList: async (title: string) => {
@@ -192,6 +197,7 @@ describe("interactive TUI adaptation", () => {
 		expect(reset).toHaveBeenCalledOnce();
 		expect(agent.state.messages).toEqual([{ role: "user", content: [{ type: "text", text: "b" }], timestamp: 1 }]);
 		expect(tui.clearTranscript).toHaveBeenCalledOnce();
+		expect(tui.appendUser).toHaveBeenCalledWith("b", false);
 		expect(lines.some((line) => line.includes("restored sess-1") && line.includes("user: b"))).toBe(true);
 		expect(agent.prompt).not.toHaveBeenCalled();
 	});
@@ -214,6 +220,11 @@ describe("interactive TUI adaptation", () => {
 			appendNotice: (kind: string, message: string) => {
 				notices.push([kind, message]);
 			},
+			appendUser: vi.fn(),
+			appendAssistantDelta: vi.fn(),
+			appendThinkingDelta: vi.fn(),
+			appendToolStart: vi.fn(),
+			appendToolEnd: vi.fn(),
 			clearTranscript: vi.fn(),
 			readPrompt: async () => prompts[promptIndex++] ?? null,
 			pickFromList: async () => 0,
@@ -252,6 +263,11 @@ describe("interactive TUI adaptation", () => {
 			close: vi.fn(),
 			appendLine: vi.fn(),
 			appendNotice: vi.fn(),
+			appendUser: vi.fn(),
+			appendAssistantDelta: vi.fn(),
+			appendThinkingDelta: vi.fn(),
+			appendToolStart: vi.fn(),
+			appendToolEnd: vi.fn(),
 			clearTranscript: vi.fn(),
 			readPrompt: async () => prompts[promptIndex++] ?? null,
 			pickFromList: async () => picks[pickIndex++] ?? -1,

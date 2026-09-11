@@ -211,7 +211,7 @@ Flags:
   --resume           Resume latest session for cwd
   --continue         Alias for --resume
   --session <id>     Open a session id
-  (TUI also offers a session picker and /sessions)
+  (the TUI always opens a fresh session; use /sessions to resume)
   --session-dir <d>  Session storage directory
   --extension <p>    Load an extension module
   --durable          Use L5 harness (op.state)

@@ -48,6 +48,8 @@ export interface InteractiveTuiOptions {
 	completionRows?: number;
 	/** Braille spinner + fast elapsed ticks. Defaults on; Z_AGENT_MOTION=off|0 disables. */
 	motion?: boolean;
+	/** Mouse wheel scrolls the transcript (moves picker selection). Z_AGENT_MOUSE=off|0 disables reporting. */
+	mouse?: boolean;
 	/** Chrome glyph set; "auto" uses ascii under CJK/ambiguous-width terminals. Z_AGENT_GLYPHS overrides. */
 	glyphs?: "unicode" | "ascii" | "auto";
 }
@@ -55,9 +57,12 @@ export interface InteractiveTuiOptions {
 export interface PickListOptions {
 	/** Value returned on Esc / Ctrl+C. Default 0. */
 	cancelValue?: number;
+	/** Initially highlighted item index. Default 0. */
+	initialIndex?: number;
 }
 
 const MAX_PROMPT_HISTORY = 100;
+const WHEEL_SCROLL_ROWS = 3;
 
 /**
  * Full-screen coding TUI: transcript, streaming deltas, editor, confirm modal.
@@ -119,6 +124,7 @@ export class InteractiveTui {
 	private tickCount = 0;
 	private ticker: NodeJS.Timeout | undefined;
 	private readonly motion: boolean;
+	private readonly mouse: boolean;
 	private readonly glyphTheme: "unicode" | "ascii" | undefined;
 	private readonly entryCache: TuiEntryCache = new WeakMap();
 	private probePending = false;
@@ -127,9 +133,13 @@ export class InteractiveTui {
 	constructor(options: InteractiveTuiOptions = {}) {
 		this.stdin = options.stdin ?? process.stdin;
 		this.stdout = options.stdout ?? process.stdout;
-		this.screen = new LineScreen((chunk) => {
-			this.stdout.write(chunk);
-		});
+		this.mouse = options.mouse ?? (process.env.Z_AGENT_MOUSE !== "off" && process.env.Z_AGENT_MOUSE !== "0");
+		this.screen = new LineScreen(
+			(chunk) => {
+				this.stdout.write(chunk);
+			},
+			{ mouse: this.mouse },
+		);
 		this.statusFn = options.status ?? (() => "z-agent");
 		this.headerFn = options.header;
 		this.onSubmitDuringRun = options.onSubmitDuringRun;
@@ -381,11 +391,15 @@ export class InteractiveTui {
 	pickFromList(title: string, items: string[], options: PickListOptions = {}): Promise<number> {
 		return new Promise((resolve) => {
 			this.cancelCompletion();
+			const initial = options.initialIndex;
 			this.picker = {
 				title,
 				items,
 				matches: items.map((_, index) => index),
-				index: 0,
+				index:
+					initial !== undefined && Number.isFinite(initial)
+						? Math.max(0, Math.min(items.length - 1, Math.trunc(initial)))
+						: 0,
 				query: "",
 				cancelValue: options.cancelValue ?? 0,
 				resolve,
@@ -459,6 +473,16 @@ export class InteractiveTui {
 
 	private dispatch(key: Key): void {
 		if (this.closed) {
+			return;
+		}
+		if (key.type === "wheelUp" || key.type === "wheelDown") {
+			const direction = key.type === "wheelDown" ? 1 : -1;
+			if (this.picker) {
+				this.picker.index = Math.max(0, Math.min(this.picker.matches.length - 1, this.picker.index + direction));
+			} else {
+				this.scrollTranscript(direction * WHEEL_SCROLL_ROWS);
+			}
+			this.repaint();
 			return;
 		}
 		if (this.picker) {
@@ -680,11 +704,14 @@ export class InteractiveTui {
 			this.cancelCompletion();
 			return true;
 		}
-		if (key.type !== "tab" && key.type !== "shiftTab") {
+		if (key.type !== "tab" && key.type !== "shiftTab" && key.type !== "up" && key.type !== "down") {
 			return false;
 		}
 		let index = this.completion.index;
-		if (this.completionAccepted || key.type === "shiftTab") {
+		if (key.type === "up" || key.type === "down") {
+			const direction = key.type === "down" ? 1 : -1;
+			index = (index + direction + this.completion.items.length) % this.completion.items.length;
+		} else if (this.completionAccepted || key.type === "shiftTab") {
 			const direction = key.type === "shiftTab" ? -1 : 1;
 			index = (index + direction + this.completion.items.length) % this.completion.items.length;
 		}
