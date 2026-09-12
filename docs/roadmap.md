@@ -68,9 +68,37 @@ command palette. Extension tools stay behind confirm. (ADR-0025)
 Responses path; `createProviderStream` routes per-call on `model.api`. Catalog
 entries and `--api` select the dialect; `ANTHROPIC_*` env keys. (ADR-0027)
 
+## Phase 3.1 — Provider retry and timeouts (done)
+
+`fetchWithRetry` bounds transient HTTP/network/headers-timeout failures per
+request (`Retry-After` honoured, jittered exponential backoff, `onRetry`
+callback); `withIdleTimeout` ends a silently hung stream with `Stream idle
+for 120s`. All three adapters share `ProviderHttpConfig`; `--no-retry` opts
+out, `--verbose` prints `[retry n/m in Xms: reason]`. (ADR-0028)
+
 ## Phase 3.2 — Bash env scrub and default timeout (done)
 
 `buildChildEnv` scrubs secret-shaped variables from the bash child env
 (`--bash-env inherit` opts out); `timeout` defaults to 600s, clamps at 3600s
 (`--bash-timeout`), and expiry is a normal tool result. `/status` shows the
 bash policy. (ADR-0029)
+
+## Phase 3.3 — L5 op identity and settle (done)
+
+Op ids are content-derived (`tool:<toolCallId>` + intent hash;
+`stream:<session>:<contextHash>` over model/api/systemPrompt/tools/messages).
+`withSandwich` writes all four phases; `settle`/`done` replay the stored
+result, `effect` follows the resume policy (`--durable-interrupted-tool
+fail|rerun`, default `fail` → `OpInterruptedError`). `wrapStreamFn` tees events
+and holds the terminal event until the result is durable; replay emits
+`start → done/error → end`. `OpState` gains `intentHash`/`attempt`/`createdAt`;
+SQLite migrates in place. (ADR-0030, amends ADR-0021)
+
+## Phase 3.4 — Diagnostics and crash guard (done)
+
+`--debug` / `PILLOW_DEBUG=1|verbose` writes a redacted JSONL event log to
+`~/.pillow/logs/<day>/<session>.jsonl` (run.start, provider.*, tool.*,
+loop.turn, compaction, crash, run.end); disabled is a true no-op. The crash
+guard restores the terminal, persists the session under a 2s deadline, writes
+a crash record, and exits — for `uncaughtException`, `unhandledRejection`,
+`SIGTERM` (143), `SIGHUP` (129), and `main()` failures. (ADR-0031)

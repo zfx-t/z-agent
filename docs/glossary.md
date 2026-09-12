@@ -241,6 +241,74 @@ absent → default; above the cap → clamped with a `Note: timeout clamped` pre
 on the result; `<= 0` → error. Expiry returns `Timed out after <n> seconds`
 with `exitCode: null`. `--bash-timeout` sets the default. (ADR-0029)
 
+## Retry attempt
+
+One provider HTTP try inside `fetchWithRetry`. Policy `{ maxAttempts: 3 }` =
+1 initial + 2 retries; backoff is `min(maxDelayMs, baseDelayMs * 2^(n-1)) *
+jitter` with `Retry-After` overriding the delay (capped at `maxDelayMs`).
+Nothing retries after the first SSE event. `--no-retry` disables it. (ADR-0028)
+
+## Headers timeout
+
+Max wait from fetch start to response headers (`headersMs`, default 60s).
+Counts as a retryable failure; surfaced as `Timed out waiting for response
+headers after 60s` when attempts run out. `0` disables. (ADR-0028)
+
+## Idle timeout
+
+Max gap between two SSE events after headers arrive (`idleMs`, default
+120s). Expiry aborts a `linkAbort` child signal so the turn ends with
+`Stream idle for 120s` (`stopReason: "error"`), never `aborted`. `0`
+disables. (ADR-0028)
+
+## Diagnostics record
+
+One JSONL line in `~/.pillow/logs/<YYYY-MM-DD>/<sessionId>.jsonl`:
+`{ ts, seq, kind, sessionId, ...fields }`. Kinds: `run.start`,
+`provider.request`, `provider.retry`, `provider.response`, `tool.start`,
+`tool.end`, `loop.turn`, `compaction`, `crash`, `run.end`. Enabled by
+`--debug` / `PILLOW_DEBUG=1|verbose`; disabled is a no-op (no file handle).
+Durations are derived from `agent.subscribe` event timing; day dirs are
+`0700`, files `0600`, rotation keeps 7 days / 50 files per day. (ADR-0031)
+
+## Redaction
+
+Field-level scrub applied to every diagnostics record (verbose included):
+keys matching `api[-_]?key|authorization|x-api-key|token|secret|password` on
+a segment boundary, and string values matching `sk|sk-ant|ghp|gho|xox[abp]-…`,
+become `"[redacted]"`. `estTokens`-style names survive. Message text and tool
+argument values are never written — verbose mode logs sizes
+(`textChars`/`argsChars`) and key names only. (ADR-0031)
+
+## Crash guard
+
+Ordered fault shutdown installed by the CLI: latch → restoreTerminal →
+persistSession (2s deadline) → crash record + flush (500ms) → one stderr
+line → `exit(1|143|129)` for `uncaughtException`, `unhandledRejection`,
+`SIGTERM`, `SIGHUP`, and `main()` failures. A second fault in flight prints
+and exits immediately. `SIGINT` is not handled here — `SigintAbort` keeps
+abort/130 semantics. (ADR-0031)
+
 ## op.state
 
-Per-operation durable counter written by `@z-agent/harness` (`intent` → `effect` → `done`). JSONL per-op files or a single SQLite `op.state.db` via `--durable-backend`. (ADR-0010, ADR-0021, ADR-0026)
+Per-operation durable record written by `@z-agent/harness`. Phases:
+`intent` (inputs recorded) → `effect` (in flight) → `settle` (result durably
+stored) → `done` (returned to caller). `settle`/`done` with a result replays
+without re-running; `effect` on resume follows the resume policy. JSONL per-op
+files or a single SQLite `op.state.db` via `--durable-backend`. (ADR-0010,
+ADR-0021, ADR-0026, ADR-0030)
+
+## intent hash
+
+sha256 of the canonical intent (`canonicalJson`: recursive key sort, long
+strings/bytes as digest markers). Tool ops pin `{name, params}` to
+`tool:<toolCallId>`; a mismatch throws `OpIntentMismatchError`. Stream ops are
+`stream:<sessionId|anon>:<contextHash>` where the hash covers
+model/api/systemPrompt/tools/messages. (ADR-0030)
+
+## resume policy
+
+What the L5 sandwich does with an op found in `effect` phase on resume:
+`fail` throws `OpInterruptedError` (never re-runs); `rerun` executes again
+with `attempt` bumped. Defaults: tools `fail`, streams `rerun`; CLI override
+`--durable-interrupted-tool`. (ADR-0030)

@@ -27,7 +27,10 @@
 | [0025](0025-extension-surface.md) | Command registry and extension surface | Accepted |
 | [0026](0026-sqlite-op-state.md) | SQLite op.state backend | Accepted |
 | [0027](0027-multi-provider.md) | Multi-provider stream dispatch | Accepted |
+| [0028](0028-provider-retry-timeout.md) | Provider retry and stream timeouts | Accepted |
 | [0029](0029-bash-env-timeout.md) | Bash env scrub and default timeout | Accepted |
+| [0030](0030-l5-op-identity-settle.md) | L5 op identity, settle phase, and stream replay | Accepted (amends 0021) |
+| [0031](0031-diagnostics-crash-guard.md) | Diagnostics log and crash guard | Accepted |
 
 ## Format
 
