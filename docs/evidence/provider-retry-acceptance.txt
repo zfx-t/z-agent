@@ -1,0 +1,96 @@
+# provider retry + stream timeouts — live acceptance (ADR-0028)
+# Date: 2026-09-12. Local stub server (node:http), no external provider.
+#
+# Stub script (run per case with STUB_MODE=<mode> node stub.mjs; prints PORT=…):
+#
+#   import http from "node:http";
+#   const mode = process.env.STUB_MODE ?? "retry-then-ok";
+#   let requests = 0;
+#   http.createServer((req, res) => {
+#     requests += 1; console.error(`[stub] request #${requests} ${req.method} ${req.url}`); req.resume();
+#     if (mode === "retry-then-ok") {
+#       if (requests === 1) { res.writeHead(429, { "retry-after": "1" }); res.end("rate limited"); return; }
+#       res.writeHead(200, { "content-type": "text/event-stream" });
+#       res.end(`data: ${JSON.stringify({ type: "response.completed",
+#         response: { id: "r_live", status: "completed",
+#           usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } } })}\n\ndata: [DONE]\n\n`);
+#       return;
+#     }
+#     if (mode === "always-429") { res.writeHead(429, { "retry-after": "0" }); res.end("limited"); return; }
+#     if (mode === "hang-after-headers") {
+#       res.writeHead(200, { "content-type": "text/event-stream" });
+#       res.write(`data: ${JSON.stringify({ type: "response.created",
+#         response: { id: "r_hang", status: "in_progress" } })}\n\n`);
+#       return; // socket stays open, nothing else is sent
+#     }
+#   }).listen(0, "127.0.0.1", function () { console.log(`PORT=${this.address().port}`); });
+
+## Run 1 — `-p --verbose` against retry-then-ok stub (429 + Retry-After: 1 → 200)
+
+$ OPENAI_API_KEY=sk-test OPENAI_BASE_URL=http://127.0.0.1:$PORT \
+    OPENAI_CONTEXT_WINDOW=200000 \
+    node packages/cli/bin/z-agent.mjs -p --verbose --model stub-model "say hi"
+
+[mode] print model=stub-model contextWindow=200000 maxTokens=unknown thinking=off cwd=…
+[agent_start]
+[turn_start]
+[message_start] role=user
+[message_end]
+[retry 1/3 in 1000ms: HTTP 429]
+[message_start] role=assistant
+[message_end]
+[turn_end]
+[agent_end]
+
+# Retry-After: 1 was honoured (in 1000ms), the second request streamed a
+# normal response.completed → done, and the only visibility was the single
+# stderr `[retry …]` line. Two POST /responses hit the stub.
+
+## Run 2 — hang-after-headers stub, idle timeout (createProviderStream driver)
+
+# No CLI flag for idleMs by design (ADR-0028 non-goal); the driver script is
+# the same factory the CLI builds, run under node --experimental-strip-types:
+#
+#   import { createOpenAIResponsesModel, createProviderStream } from ".../packages/ai/src/index.ts";
+#   const streamFn = createProviderStream({ timeouts: { idleMs: 500 } });
+#   const model = createOpenAIResponsesModel({ id: "stub-model", baseUrl: `http://127.0.0.1:${port}` });
+#   const final = await streamFn(model, { messages: [] }, { apiKey: "sk-test" }).result();
+
+stopReason=error
+errorMessage=Stream idle for 0.5s
+[stub] request #1 POST /responses
+
+# Real fetch, real socket: headers + one event arrived, then silence. The turn
+# ended with the idle error string instead of hanging.
+
+## Run 3 — `--no-retry` against always-429 stub: exactly one request
+
+$ OPENAI_API_KEY=sk-test OPENAI_BASE_URL=http://127.0.0.1:$PORT \
+    OPENAI_CONTEXT_WINDOW=200000 \
+    node packages/cli/bin/z-agent.mjs -p --no-retry --model stub-model "say hi"
+
+[error] OpenAI Responses HTTP 429 Too Many Requests: limited
+[stub] request #1 POST /responses      # the stub saw exactly one request
+
+## Unit/task evidence (vitest)
+
+- Task 1 retry.test.ts: 18 tests — backoff math, Retry-After seconds +
+  HTTP-date + cap, status matrix, network-error retry, headers-timeout retry,
+  abort during sleep, attempt cap, `policy: false`, callback payloads.
+- Task 2 timeouts.test.ts: 12 tests — headers timeout fires/clears, idle
+  timer resets per event, ms=0 disables, caller abort propagates,
+  `vi.getTimerCount() === 0` after each case.
+- Task 3 provider-shared.test.ts: 7 tests — resolveHttpConfig defaults /
+  retry:false / partial merges, httpErrorMessage 500-char truncation and
+  body-read-failure tolerance.
+- Tasks 4–5 adapter tests (one retry + one idle + exhausted + abort-during-
+  backoff each): openai-responses.test.ts 29, openai-completions.test.ts 22,
+  anthropic-messages.test.ts 21 — all assert no `start` event on failed
+  attempts and adapter-prefixed `… HTTP 503 … after 3 attempts`.
+- Task 6 provider-stream.test.ts 5 (retry:false single fetch; onRetry through
+  dispatcher for all three apis), cli args.test.ts 11 (--no-retry + help).
+- `npm run check` clean (biome + tsc across all six packages).
+
+# Contract deviation noted in ADR-0028: FetchWithRetryInput gained
+# `httpErrorPrefix` — the adapter label must reach the terminal error message
+# and the contract map offered no other channel.

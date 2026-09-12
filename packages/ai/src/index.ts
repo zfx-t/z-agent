@@ -35,8 +35,27 @@ export {
 	parseResponsesSse,
 	streamOpenAIResponses,
 } from "./openai-responses.ts";
+export type { ProviderHttpConfig, ResolvedHttpConfig } from "./provider-shared.ts";
+export { httpErrorMessage, resolveHttpConfig } from "./provider-shared.ts";
 export type { ProviderApi, ProviderStreamConfig } from "./provider-stream.ts";
 export { createProviderStream, PROVIDER_APIS, providerForApi } from "./provider-stream.ts";
+export type { FetchWithRetryInput, OnRetry, RetryEvent, RetryPolicy, Sleep } from "./retry.ts";
+export {
+	computeBackoff,
+	DEFAULT_RETRY_POLICY,
+	DEFAULT_RETRYABLE_STATUSES,
+	fetchWithRetry,
+	isRetryableNetworkError,
+	parseRetryAfter,
+} from "./retry.ts";
+export type { StreamTimeouts } from "./timeouts.ts";
+export {
+	DEFAULT_STREAM_TIMEOUTS,
+	linkAbort,
+	StreamTimeoutError,
+	withHeadersTimeout,
+	withIdleTimeout,
+} from "./timeouts.ts";
 export type {
 	AssistantContent,
 	AssistantMessage,

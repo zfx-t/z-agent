@@ -18,11 +18,15 @@ import {
 	formatError,
 	isAbortError,
 	normalizeToolCallIdParts,
+	type ProviderHttpConfig,
+	resolveHttpConfig,
 	type StreamingToolCall,
 	toolResultText,
 	trimTrailingSlash,
 } from "./provider-shared.ts";
+import { fetchWithRetry } from "./retry.ts";
 import { parseSseJson } from "./sse.ts";
+import { linkAbort, type StreamTimeoutError, withIdleTimeout } from "./timeouts.ts";
 import type {
 	AssistantMessage,
 	Context,
@@ -44,13 +48,11 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_API = "openai-completions";
 const DEFAULT_PROVIDER = "openai";
 
-export interface OpenAICompletionsConfig {
+export interface OpenAICompletionsConfig extends ProviderHttpConfig {
 	/** Default API key when StreamOptions.apiKey is omitted. Falls back to OPENAI_API_KEY. */
 	apiKey?: string;
 	/** Default base URL when Model.baseUrl is empty. Falls back to OPENAI_BASE_URL. */
 	baseUrl?: string;
-	/** Injected fetch (tests). Defaults to globalThis.fetch. */
-	fetch?: typeof globalThis.fetch;
 }
 
 export interface OpenAICompletionsStreamOptions extends StreamOptions {
@@ -519,7 +521,11 @@ export function streamOpenAICompletions(
 	const stream = createAssistantMessageEventStream();
 	const output = createPendingOutput(model);
 	const signal = options?.signal;
-	const fetchFn = config?.fetch ?? globalThis.fetch.bind(globalThis);
+	const http = resolveHttpConfig(config);
+	// Idle timeouts abort this child signal — the caller signal stays clean so
+	// isAbortError(error, signal) still distinguishes user abort from timeout.
+	const linked = linkAbort(signal);
+	let idleError: StreamTimeoutError | undefined;
 
 	void (async () => {
 		try {
@@ -537,33 +543,44 @@ export function streamOpenAICompletions(
 			const baseUrl = resolveBaseUrl(model, options, config);
 			const body = buildCompletionsBody(model, context, options);
 
-			const response = await fetchFn(`${baseUrl}/chat/completions`, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${apiKey}`,
-					"Content-Type": "application/json",
-					Accept: "text/event-stream",
+			const response = await fetchWithRetry({
+				fetch: http.fetch,
+				url: `${baseUrl}/chat/completions`,
+				init: {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${apiKey}`,
+						"Content-Type": "application/json",
+						Accept: "text/event-stream",
+					},
+					body: JSON.stringify(body),
 				},
-				body: JSON.stringify(body),
+				policy: http.retry,
 				signal,
+				headersMs: http.timeouts.headersMs,
+				onRetry: http.onRetry,
+				httpErrorPrefix: "OpenAI Completions",
 			});
-
-			if (!response.ok) {
-				let detail = "";
-				try {
-					detail = (await response.text()).slice(0, 500);
-				} catch {
-					// ignore body read failure
-				}
-				throw new Error(
-					`OpenAI Completions HTTP ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
-				);
-			}
 
 			stream.push({ type: "start", partial: output });
 
-			await processCompletionsEvents(parseSseJson<CompletionsChunk>(response.body, signal), output, stream, signal);
+			await processCompletionsEvents(
+				withIdleTimeout(
+					parseSseJson<CompletionsChunk>(response.body, linked.signal),
+					http.timeouts.idleMs,
+					(error) => {
+						idleError = error;
+						linked.abort(error);
+					},
+				),
+				output,
+				stream,
+				signal,
+			);
 
+			if (idleError) {
+				throw idleError;
+			}
 			if (signal?.aborted) {
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
@@ -585,11 +602,15 @@ export function streamOpenAICompletions(
 			stream.end(output);
 		} catch (error) {
 			stripScratch(output);
-			const aborted = isAbortError(error, signal);
+			const aborted = idleError === undefined && isAbortError(error, signal);
 			output.stopReason = aborted ? "aborted" : "error";
-			output.errorMessage = aborted ? (output.errorMessage ?? "Request was aborted") : formatError(error);
+			output.errorMessage = aborted
+				? (output.errorMessage ?? "Request was aborted")
+				: (idleError?.message ?? formatError(error));
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end(output);
+		} finally {
+			linked.dispose();
 		}
 	})();
 

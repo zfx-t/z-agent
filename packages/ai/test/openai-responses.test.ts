@@ -737,6 +737,133 @@ describe("streamOpenAIResponses", () => {
 		expect(url).toBe("https://example.test/v1/responses");
 	});
 
+	it("retries a 429 then streams normally, reporting exactly one onRetry", async () => {
+		let calls = 0;
+		const fetchMock: typeof fetch = async () => {
+			calls += 1;
+			if (calls === 1) {
+				return new Response("rate limited", {
+					status: 429,
+					statusText: "Too Many Requests",
+					headers: { "retry-after": "1" },
+				});
+			}
+			return new Response(textCompletedSse("after retry"), {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		};
+		const retries: Array<{ attempt: number; reason: string }> = [];
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk" },
+			{
+				fetch: fetchMock,
+				retry: { baseDelayMs: 0, maxDelayMs: 0 },
+				onRetry: (e) => retries.push({ attempt: e.attempt, reason: e.reason }),
+			},
+		);
+		const events = await collect(stream);
+		const final = await stream.result();
+
+		expect(calls).toBe(2);
+		expect(retries).toEqual([{ attempt: 1, reason: "HTTP 429" }]);
+		expect(events[0]?.type).toBe("start");
+		expect(events.at(-1)?.type).toBe("done");
+		expect(final.stopReason).toBe("stop");
+		expect(final.content).toEqual([expect.objectContaining({ type: "text", text: "after retry" })]);
+	});
+
+	it("ends with an error naming the last status after retries are exhausted", async () => {
+		let calls = 0;
+		const fetchMock: typeof fetch = async () => {
+			calls += 1;
+			return new Response(`boom ${calls}`, { status: 503, statusText: "Service Unavailable" });
+		};
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk" },
+			{ fetch: fetchMock, retry: { baseDelayMs: 0, maxDelayMs: 0 } },
+		);
+		const events = await collect(stream);
+		const final = await stream.result();
+
+		expect(calls).toBe(3);
+		expect(events.some((e) => e.type === "start")).toBe(false);
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("error");
+		expect(final.errorMessage).toMatch(/^OpenAI Responses HTTP 503/u);
+		expect(final.errorMessage).toContain("after 3 attempts");
+	});
+
+	it("emits no start event for failed attempts", async () => {
+		const fetchMock: typeof fetch = async () => new Response("nope", { status: 500, statusText: "ISE" });
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk" },
+			{ fetch: fetchMock, retry: { baseDelayMs: 0, maxDelayMs: 0 } },
+		);
+		const events = await collect(stream);
+		expect(events.map((e) => e.type)).toEqual(["error"]);
+	});
+
+	it("turns a stalled body into a `Stream idle for` error", async () => {
+		const encoder = new TextEncoder();
+		const hanging = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(
+						`data: ${JSON.stringify({ type: "response.created", response: { id: "r_hang", status: "in_progress" } })}\n\n`,
+					),
+				);
+				// never closes — socket stayed open but silent
+			},
+		});
+		const fetchMock: typeof fetch = async () =>
+			new Response(hanging, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk" },
+			{ fetch: fetchMock, timeouts: { idleMs: 10 } },
+		);
+		const events = await collect(stream);
+		const final = await stream.result();
+
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("error");
+		expect(final.errorMessage).toContain("Stream idle for");
+	});
+
+	it("aborts during the backoff sleep instead of retrying", async () => {
+		const ac = new AbortController();
+		let calls = 0;
+		const fetchMock: typeof fetch = async () => {
+			calls += 1;
+			return new Response("limited", { status: 429, statusText: "Too Many Requests" });
+		};
+		const stream = streamOpenAIResponses(
+			model,
+			emptyContext,
+			{ apiKey: "sk", signal: ac.signal },
+			{
+				fetch: fetchMock,
+				retry: { baseDelayMs: 60_000, maxDelayMs: 60_000 },
+				onRetry: () => ac.abort(),
+			},
+		);
+		const events = await collect(stream);
+		const final = await stream.result();
+
+		expect(calls).toBe(1);
+		expect(events.at(-1)?.type).toBe("error");
+		expect(final.stopReason).toBe("aborted");
+	});
+
 	it("parses reasoning SSE and stores thinkingSignature", async () => {
 		const item = {
 			type: "reasoning",

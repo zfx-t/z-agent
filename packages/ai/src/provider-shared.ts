@@ -3,8 +3,12 @@
  * openai-completions, anthropic-messages).
  */
 
+import { DEFAULT_RETRY_POLICY, type OnRetry, type RetryPolicy } from "./retry.ts";
+import { DEFAULT_STREAM_TIMEOUTS, type StreamTimeouts } from "./timeouts.ts";
 import type { AssistantMessage, Message, ToolCall } from "./types.ts";
 import { emptyUsage } from "./types.ts";
+
+export { httpErrorMessage } from "./retry.ts";
 
 export function env(name: string): string | undefined {
 	try {
@@ -17,6 +21,34 @@ export function env(name: string): string | undefined {
 
 export function trimTrailingSlash(url: string): string {
 	return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/**
+ * Per-factory HTTP behaviour for provider adapters. `retry: false` disables
+ * retry entirely; partial policy/timeouts merge over the defaults.
+ */
+export interface ProviderHttpConfig {
+	/** Injected fetch (tests). Defaults to globalThis.fetch. */
+	fetch?: typeof globalThis.fetch;
+	retry?: Partial<RetryPolicy> | false;
+	timeouts?: Partial<StreamTimeouts>;
+	onRetry?: OnRetry;
+}
+
+export interface ResolvedHttpConfig {
+	fetch: typeof globalThis.fetch;
+	retry: RetryPolicy | false;
+	timeouts: StreamTimeouts;
+	onRetry?: OnRetry;
+}
+
+export function resolveHttpConfig(config?: ProviderHttpConfig): ResolvedHttpConfig {
+	return {
+		fetch: config?.fetch ?? globalThis.fetch.bind(globalThis),
+		retry: config?.retry === false ? false : { ...DEFAULT_RETRY_POLICY, ...config?.retry },
+		timeouts: { ...DEFAULT_STREAM_TIMEOUTS, ...config?.timeouts },
+		onRetry: config?.onRetry,
+	};
 }
 
 export function isAbortError(error: unknown, signal?: AbortSignal): boolean {

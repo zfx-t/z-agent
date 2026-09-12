@@ -156,58 +156,58 @@ export interface CliArgs { /* … */ noRetry: boolean; }
 
 **Files:** Create `packages/ai/src/retry.ts`, `packages/ai/test/retry.test.ts`.
 
-- [ ] **Step 1: Failing tests** — cases: `parseRetryAfter("2")` → 2000; HTTP-date 3s in future → ~3000; garbage → undefined. `computeBackoff` with `random = () => 0.5` gives `base * 2^(n-1)` capped at `maxDelayMs`. `fetchWithRetry`: 429,429,200 → 200 and two `onRetry` events with attempts 1 and 2; 500×3 → throws `HTTP 500 … after 3 attempts`; 401 → throws immediately, no sleep; `TypeError("fetch failed")` then 200 → ok; abort during sleep → rejects with AbortError and no further fetch; `policy: false` → single attempt.
-- [ ] **Step 2: Implement** with injected `sleep` that rejects on abort (`signal.addEventListener("abort")`), `random`, and no timers left behind (`clearTimeout` in `finally`).
-- [ ] **Step 3: Run** `npx vitest --run packages/ai/test/retry.test.ts`.
-- [ ] **Step 4: `npm run check`** and record test count in evidence.
+- [x] **Step 1: Failing tests** — cases: `parseRetryAfter("2")` → 2000; HTTP-date 3s in future → ~3000; garbage → undefined. `computeBackoff` with `random = () => 0.5` gives `base * 2^(n-1)` capped at `maxDelayMs`. `fetchWithRetry`: 429,429,200 → 200 and two `onRetry` events with attempts 1 and 2; 500×3 → throws `HTTP 500 … after 3 attempts`; 401 → throws immediately, no sleep; `TypeError("fetch failed")` then 200 → ok; abort during sleep → rejects with AbortError and no further fetch; `policy: false` → single attempt.
+- [x] **Step 2: Implement** with injected `sleep` that rejects on abort (`signal.addEventListener("abort")`), `random`, and no timers left behind (`clearTimeout` in `finally`).
+- [x] **Step 3: Run** `npx vitest --run packages/ai/test/retry.test.ts`.
+- [x] **Step 4: `npm run check`** and record test count in evidence.
 
 ### Task 2: Timeout primitives
 
 **Files:** Create `packages/ai/src/timeouts.ts`, `packages/ai/test/timeouts.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `withHeadersTimeout` rejects with `StreamTimeoutError{phase:"headers"}` when `run` never resolves (use `vi.useFakeTimers`); resolves and clears the timer when `run` resolves first; parent abort rejects with AbortError. `withIdleTimeout`: three events spaced under `ms` pass through; a gap over `ms` calls `onTimeout` once and the generator terminates; `ms = 0` disables. `linkAbort`: parent abort propagates; `dispose` removes the listener.
-- [ ] **Step 2: Implement.** `withIdleTimeout` races `source.next()` against a per-event timer; on timeout call `onTimeout(err)` and `return`. The adapter's outer catch turns the error into `stopReason: "error"`.
-- [ ] **Step 3: Run** focused test, then `npm run check`.
+- [x] **Step 1: Failing tests** — `withHeadersTimeout` rejects with `StreamTimeoutError{phase:"headers"}` when `run` never resolves (use `vi.useFakeTimers`); resolves and clears the timer when `run` resolves first; parent abort rejects with AbortError. `withIdleTimeout`: three events spaced under `ms` pass through; a gap over `ms` calls `onTimeout` once and the generator terminates; `ms = 0` disables. `linkAbort`: parent abort propagates; `dispose` removes the listener.
+- [x] **Step 2: Implement.** `withIdleTimeout` races `source.next()` against a per-event timer; on timeout call `onTimeout(err)` and `return`. The adapter's outer catch turns the error into `stopReason: "error"`.
+- [x] **Step 3: Run** focused test, then `npm run check`.
 
 ### Task 3: Shared HTTP config
 
 **Files:** Modify `packages/ai/src/provider-shared.ts`, `packages/ai/src/index.ts`; add tests to `packages/ai/test/smoke.test.ts` or a new `provider-shared.test.ts`.
 
-- [ ] **Step 1: Failing test** — `resolveHttpConfig()` returns defaults; `retry: false` stays `false`; partial `timeouts` merge; `httpErrorMessage` truncates body to 500 chars and tolerates a body read failure.
-- [ ] **Step 2: Implement** and export `RetryPolicy`, `StreamTimeouts`, `DEFAULT_*`, `RetryEvent`, `OnRetry`, `StreamTimeoutError`, `ProviderHttpConfig`.
-- [ ] **Step 3: Run** focused tests + `npm run check`.
+- [x] **Step 1: Failing test** — `resolveHttpConfig()` returns defaults; `retry: false` stays `false`; partial `timeouts` merge; `httpErrorMessage` truncates body to 500 chars and tolerates a body read failure.
+- [x] **Step 2: Implement** and export `RetryPolicy`, `StreamTimeouts`, `DEFAULT_*`, `RetryEvent`, `OnRetry`, `StreamTimeoutError`, `ProviderHttpConfig`.
+- [x] **Step 3: Run** focused tests + `npm run check`.
 
 ### Task 4: Wire the Responses adapter
 
 **Files:** Modify `packages/ai/src/openai-responses.ts`, `packages/ai/test/openai-responses.test.ts`.
 
-- [ ] **Step 1: Failing tests** (mock fetch, fake timers): 429 with `Retry-After: 1` then 200 SSE → normal `start … done` sequence and exactly one `onRetry`; 503×3 → single `error` event whose `errorMessage` starts with `OpenAI Responses HTTP 503` and contains `after 3 attempts`; body that emits one event then nothing → `Stream idle for` error after `idleMs`; caller abort during backoff → `aborted`; ensure **no `start` event** is emitted for failed attempts.
-- [ ] **Step 2: Implement** — `const http = resolveHttpConfig(config)`; `const response = await fetchWithRetry({ fetch: http.fetch, url, init, policy: http.retry, signal, headersMs: http.timeouts.headersMs, onRetry: http.onRetry })`; wrap `parseResponsesSse(response.body, linked.signal)` with `withIdleTimeout(..., http.timeouts.idleMs, (e) => { idleError = e; linked.abort(e); })`; in the catch, if `idleError` is set, use its message (do not classify as aborted because the caller signal is not aborted).
-- [ ] **Step 3: Run** `npx vitest --run packages/ai/test/openai-responses.test.ts`; existing 71 provider tests must still pass.
-- [ ] **Step 4: `npm run check`.**
+- [x] **Step 1: Failing tests** (mock fetch, fake timers): 429 with `Retry-After: 1` then 200 SSE → normal `start … done` sequence and exactly one `onRetry`; 503×3 → single `error` event whose `errorMessage` starts with `OpenAI Responses HTTP 503` and contains `after 3 attempts`; body that emits one event then nothing → `Stream idle for` error after `idleMs`; caller abort during backoff → `aborted`; ensure **no `start` event** is emitted for failed attempts.
+- [x] **Step 2: Implement** — `const http = resolveHttpConfig(config)`; `const response = await fetchWithRetry({ fetch: http.fetch, url, init, policy: http.retry, signal, headersMs: http.timeouts.headersMs, onRetry: http.onRetry })`; wrap `parseResponsesSse(response.body, linked.signal)` with `withIdleTimeout(..., http.timeouts.idleMs, (e) => { idleError = e; linked.abort(e); })`; in the catch, if `idleError` is set, use its message (do not classify as aborted because the caller signal is not aborted).
+- [x] **Step 3: Run** `npx vitest --run packages/ai/test/openai-responses.test.ts`; existing 71 provider tests must still pass.
+- [x] **Step 4: `npm run check`.**
 
 ### Task 5: Wire Completions and Anthropic adapters
 
 **Files:** Modify `openai-completions.ts`, `anthropic-messages.ts` and their tests.
 
-- [ ] **Step 1: Failing tests** — same four cases per adapter as Task 4, with adapter-specific error prefixes (`OpenAI Completions HTTP`, `Anthropic Messages HTTP`).
-- [ ] **Step 2: Implement** with the identical pattern; no adapter-local branching.
-- [ ] **Step 3: Run** both test files, then `npm run check`.
+- [x] **Step 1: Failing tests** — same four cases per adapter as Task 4, with adapter-specific error prefixes (`OpenAI Completions HTTP`, `Anthropic Messages HTTP`).
+- [x] **Step 2: Implement** with the identical pattern; no adapter-local branching.
+- [x] **Step 3: Run** both test files, then `npm run check`.
 
 ### Task 6: Dispatcher pass-through and CLI flag
 
 **Files:** Modify `provider-stream.ts`, `provider-stream.test.ts`, `packages/cli/src/args.ts`, `packages/cli/src/cli.ts`, `packages/cli/test/args.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `createProviderStream({ retry: false, fetch })` performs one fetch on 429; `onRetry` reaches the callback through the dispatcher for each api; `parseArgs(["--no-retry"])` sets `noRetry`; help lists the flag.
-- [ ] **Step 2: Implement** — in `cli.ts` build `createProviderStream({ retry: args.noRetry ? false : undefined, onRetry: (e) => verbose && stderr(`[retry ${e.attempt}/${e.maxAttempts} in ${e.delayMs}ms: ${e.reason}]`) })`.
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `createProviderStream({ retry: false, fetch })` performs one fetch on 429; `onRetry` reaches the callback through the dispatcher for each api; `parseArgs(["--no-retry"])` sets `noRetry`; help lists the flag.
+- [x] **Step 2: Implement** — in `cli.ts` build `createProviderStream({ retry: args.noRetry ? false : undefined, onRetry: (e) => verbose && stderr(`[retry ${e.attempt}/${e.maxAttempts} in ${e.delayMs}ms: ${e.reason}]`) })`.
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 7: ADR, docs, evidence
 
-- [ ] Write `docs/adr/0028-provider-retry-timeout.md` (Context / Decision / Consequences / Alternatives: SDK retry, retry-after-start with dedupe, circuit breaker) and add the row to `docs/adr/README.md`.
-- [ ] Roadmap: `Phase 3.1 — Provider retry and timeouts`. Glossary: `headers timeout`, `idle timeout`, `retry attempt`.
-- [ ] `packages/ai/README.md`: config example with `retry` / `timeouts` / `onRetry`.
-- [ ] Live acceptance → `docs/evidence/provider-retry-acceptance.txt`: (a) `-p --verbose` against a local stub server returning 429 then 200 (script inline in the evidence file); (b) stub that closes the socket after headers → idle error string; (c) `--no-retry` shows a single request.
+- [x] Write `docs/adr/0028-provider-retry-timeout.md` (Context / Decision / Consequences / Alternatives: SDK retry, retry-after-start with dedupe, circuit breaker) and add the row to `docs/adr/README.md`.
+- [x] Roadmap: `Phase 3.1 — Provider retry and timeouts`. Glossary: `headers timeout`, `idle timeout`, `retry attempt`.
+- [x] `packages/ai/README.md`: config example with `retry` / `timeouts` / `onRetry`.
+- [x] Live acceptance → `docs/evidence/provider-retry-acceptance.txt`: (a) `-p --verbose` against a local stub server returning 429 then 200 (script inline in the evidence file); (b) stub that closes the socket after headers → idle error string; (c) `--no-retry` shows a single request.
 
 ## Execution Loop (per task)
 

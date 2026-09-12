@@ -11,7 +11,7 @@ import type { AssistantMessageEventStream } from "./event-stream.ts";
 import { createAssistantMessageEventStream } from "./event-stream.ts";
 import { streamOpenAICompletions } from "./openai-completions.ts";
 import { streamOpenAIResponses } from "./openai-responses.ts";
-import { createPendingOutput } from "./provider-shared.ts";
+import { createPendingOutput, type ProviderHttpConfig } from "./provider-shared.ts";
 import type { Context, Model, StreamFn, StreamOptions } from "./types.ts";
 
 export type ProviderApi = "openai-responses" | "openai-completions" | "anthropic-messages";
@@ -28,10 +28,7 @@ export function providerForApi(api: string): string {
 	}
 }
 
-export interface ProviderStreamConfig {
-	/** Injected fetch (tests). Defaults to globalThis.fetch. */
-	fetch?: typeof globalThis.fetch;
-}
+export interface ProviderStreamConfig extends ProviderHttpConfig {}
 
 function streamUnsupportedApi(model: Model): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
