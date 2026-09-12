@@ -67,6 +67,17 @@ describe("formatters", () => {
 		).toBe(
 			"[status] model=fast(gpt-4.1-mini) thinking=off contextWindow=128000 maxTokens=4096 persist=alias skills=progressive:2 cwd=/tmp/app",
 		);
+		expect(
+			formatRuntimeStatus({
+				view: aliasView,
+				skillsMode: "progressive",
+				skillsActive: 2,
+				cwd: "/tmp/app",
+				bash: "timeout 600s/3600s, env scrub",
+			}),
+		).toBe(
+			"[status] model=fast(gpt-4.1-mini) thinking=off contextWindow=128000 maxTokens=4096 persist=alias skills=progressive:2 cwd=/tmp/app bash: timeout 600s/3600s, env scrub",
+		);
 		expect(formatCompactContext(128_000)).toBe("128k");
 		expect(formatCompactContext(200_000)).toBe("200k");
 		expect(formatCompactContext(2_000_000)).toBe("2m");

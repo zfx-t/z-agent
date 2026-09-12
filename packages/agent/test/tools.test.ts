@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { buildChildEnv as indexBuildChildEnv, DEFAULT_BASH_ENV_POLICY as indexDefaultPolicy } from "../src/index.ts";
 import {
 	applyEdits,
 	assertInsideJail,
@@ -15,9 +16,11 @@ import {
 	createReadTool,
 	createWriteTool,
 	detectImageMimeType,
+	resolveTimeoutMs,
 	win32TaskkillArgs,
 	withFileMutationQueue,
 } from "../src/tools/index.ts";
+import { defaultKillProcessTree, type ProcessKiller } from "../src/tools/kill-process-tree.ts";
 import { resolveToCwd } from "../src/tools/path.ts";
 import { truncateHead, truncateTail } from "../src/tools/truncate.ts";
 
@@ -244,4 +247,90 @@ describe("coding tools", () => {
 			"ls",
 		]);
 	}, 10_000);
+});
+
+describe("bash timeout policy", () => {
+	const policy = { defaultSeconds: 600, maxSeconds: 3600 };
+
+	it("resolveTimeoutMs applies default, cap, and validation", () => {
+		expect(resolveTimeoutMs(undefined, policy)).toEqual({ ms: 600_000, clamped: false });
+		expect(resolveTimeoutMs(99_999, policy)).toEqual({ ms: 3_600_000, clamped: true });
+		expect(resolveTimeoutMs(30, policy)).toEqual({ ms: 30_000, clamped: false });
+		expect(() => resolveTimeoutMs(0, policy)).toThrow(/Invalid timeout/);
+		expect(() => resolveTimeoutMs(-5, policy)).toThrow(/Invalid timeout/);
+		expect(() => resolveTimeoutMs(Number.NaN, policy)).toThrow(/Invalid timeout/);
+	});
+
+	it("no timeout ends at the default and reports exitCode null", async () => {
+		const dir = await makeCwd();
+		const killed: number[] = [];
+		const kill: ProcessKiller = (pid) => {
+			killed.push(pid);
+			defaultKillProcessTree(pid);
+		};
+		const tool = createBashTool(dir, { timeout: { defaultSeconds: 1, maxSeconds: 2 }, kill });
+		const result = await tool.execute("t1", { command: "sleep 5" });
+		const text = result.content[0] && result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text).toContain("Timed out after 1 seconds");
+		expect(result.details?.exitCode).toBeNull();
+		expect(killed.length).toBe(1);
+	}, 10_000);
+
+	it("timeout above the cap is clamped and the result says so", async () => {
+		const dir = await makeCwd();
+		const tool = createBashTool(dir, { timeout: { defaultSeconds: 1, maxSeconds: 2 } });
+		const result = await tool.execute("t1", { command: "echo done", timeout: 10 });
+		const text = result.content[0] && result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text.startsWith("Note: timeout clamped to 2s.")).toBe(true);
+		expect(text).toContain("exit 0");
+		expect(result.details?.exitCode).toBe(0);
+	});
+});
+
+describe("bash env policy", () => {
+	const isWin = process.platform === "win32";
+	const printKey = isWin ? "echo %OPENAI_API_KEY%" : "printenv OPENAI_API_KEY";
+	const sourceEnv: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: "sk-test", Z_AGENT_KEEP: "1" };
+
+	it("scrubs secret-shaped variables from the child env", async () => {
+		const dir = await makeCwd();
+		const tool = createBashTool(dir, { sourceEnv });
+		const result = await tool.execute("t1", { command: printKey });
+		const text = result.content[0] && result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text).not.toContain("sk-test");
+		if (!isWin) {
+			expect(result.details?.exitCode).not.toBe(0);
+		}
+		const pathResult = await tool.execute("t2", {
+			command: isWin ? "echo %PATH%" : "printenv PATH",
+		});
+		const pathText = pathResult.content[0] && pathResult.content[0].type === "text" ? pathResult.content[0].text : "";
+		expect(pathText.length).toBeGreaterThan("exit 0\n".length);
+		const kept = await tool.execute("t3", { command: isWin ? "echo %Z_AGENT_KEEP%" : "printenv Z_AGENT_KEEP" });
+		const keptText = kept.content[0] && kept.content[0].type === "text" ? kept.content[0].text : "";
+		expect(keptText).toContain("1");
+	});
+
+	it("inherit mode passes the source env through", async () => {
+		const dir = await makeCwd();
+		const tool = createBashTool(dir, { sourceEnv, env: { mode: "inherit" } });
+		const result = await tool.execute("t1", { command: printKey });
+		const text = result.content[0] && result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text).toContain("sk-test");
+	});
+
+	it("createAllTools propagates the bash option", async () => {
+		const dir = await makeCwd();
+		const tools = createAllTools(dir, { bash: { sourceEnv } });
+		const bash = tools.find((tool) => tool.name === "bash");
+		expect(bash).toBeDefined();
+		const result = await bash?.execute("t1", { command: printKey });
+		const text = result?.content[0] && result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text).not.toContain("sk-test");
+	});
+
+	it("env policy symbols are exported from @z-agent/agent", () => {
+		expect(typeof indexBuildChildEnv).toBe("function");
+		expect(indexDefaultPolicy.mode).toBe("scrub");
+	});
 });

@@ -23,3 +23,14 @@ In-memory agent control loop for Z Agent.
 | Tool body | `tool.execute` |
 
 Coding tools (`createAllTools` / `createCodingTools`) live in this package. Durable intent/settle is `@z-agent/harness`.
+
+## Bash policy
+
+`createBashTool(cwd, options)` / `createAllTools(cwd, { bash: options })` accept:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `env` | `{ mode: "scrub" }` | `buildChildEnv` policy: `scrub` drops `DEFAULT_SECRET_PATTERNS` names (protected keys always pass; `allow` > `deny`; `set` last); `inherit` copies the source |
+| `timeout` | `{ defaultSeconds: 600, maxSeconds: 3600 }` | Missing `timeout` → default; above cap → clamped + `Note: timeout clamped to <n>s.`; expiry → `Timed out after <n> seconds` result with `exitCode: null` |
+| `sourceEnv` | `process.env` | Source env the policy derives from (tests) |
+| `kill` | `defaultKillProcessTree` | Process-tree killer (tests) |

@@ -8,5 +8,7 @@ describe("buildCodingSystemPrompt", () => {
 		expect(prompt).toContain("grep");
 		expect(prompt).toContain("jail is on");
 		expect(buildCodingSystemPrompt("/tmp/work", false)).toContain("jail is off");
+		expect(prompt).toContain("timeout");
+		expect(prompt).toContain("background");
 	});
 });

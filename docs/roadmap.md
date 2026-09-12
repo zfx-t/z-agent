@@ -67,3 +67,10 @@ command palette. Extension tools stay behind confirm. (ADR-0025)
 `openai-completions` and `anthropic-messages` adapters next to the existing
 Responses path; `createProviderStream` routes per-call on `model.api`. Catalog
 entries and `--api` select the dialect; `ANTHROPIC_*` env keys. (ADR-0027)
+
+## Phase 3.2 — Bash env scrub and default timeout (done)
+
+`buildChildEnv` scrubs secret-shaped variables from the bash child env
+(`--bash-env inherit` opts out); `timeout` defaults to 600s, clamps at 3600s
+(`--bash-timeout`), and expiry is a normal tool result. `/status` shows the
+bash policy. (ADR-0029)

@@ -128,6 +128,7 @@ export function formatRuntimeStatus(input: {
 	skillsMode: string;
 	skillsActive: number;
 	cwd: string;
+	bash?: string;
 }): string {
 	const label = !input.view.hasModel
 		? "none"
@@ -135,7 +136,8 @@ export function formatRuntimeStatus(input: {
 			? `${input.view.alias}(${input.view.id})`
 			: input.view.id;
 	const api = input.view.api ? ` api=${input.view.api}` : "";
-	return `[status] model=${label}${api} thinking=${input.view.thinking} contextWindow=${renderCount(input.view.contextWindow)} maxTokens=${renderCount(input.view.maxTokens)} persist=${input.view.persist} skills=${input.skillsMode}:${input.skillsActive} cwd=${input.cwd}`;
+	const bash = input.bash ? ` bash: ${input.bash}` : "";
+	return `[status] model=${label}${api} thinking=${input.view.thinking} contextWindow=${renderCount(input.view.contextWindow)} maxTokens=${renderCount(input.view.maxTokens)} persist=${input.view.persist} skills=${input.skillsMode}:${input.skillsActive} cwd=${input.cwd}${bash}`;
 }
 
 export function formatCompactContext(window?: number): string {

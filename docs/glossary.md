@@ -226,6 +226,21 @@ Project skills override user skills; `{cwd}/.agents` is not scanned. Skill
 
 `realpath` prefix check so coding tools cannot escape `cwd` unless `--no-jail`. Stricter than pi `resolveToCwd`. (ADR-0016)
 
+## Env scrub
+
+`buildChildEnv` policy for the bash child process: default `scrub` drops
+variables whose name matches `DEFAULT_SECRET_PATTERNS`; `PROTECTED_KEYS`
+(`PATH`, `HOME`, `LC_*`, `ComSpec`, …) always pass; `allow` beats `deny`,
+`set` applies last. `--bash-env inherit` opts out. Scrubbed names never reach
+tool output. (ADR-0029)
+
+## Timeout clamp
+
+Bash `timeout` resolves against `{ defaultSeconds: 600, maxSeconds: 3600 }`:
+absent → default; above the cap → clamped with a `Note: timeout clamped` prefix
+on the result; `<= 0` → error. Expiry returns `Timed out after <n> seconds`
+with `exitCode: null`. `--bash-timeout` sets the default. (ADR-0029)
+
 ## op.state
 
 Per-operation durable counter written by `@z-agent/harness` (`intent` → `effect` → `done`). JSONL per-op files or a single SQLite `op.state.db` via `--durable-backend`. (ADR-0010, ADR-0021, ADR-0026)

@@ -1,0 +1,56 @@
+# bash env scrub + default timeout — live acceptance (ADR-0029)
+# Date: 2026-09-12. Model: deepseek-anth(deepseek-chat) via anthropic-messages.
+# Marker key sk-live-… redacted as <KEY> below.
+
+## Run 1 — default scrub: `printenv OPENAI_API_KEY` sees nothing
+
+$ OPENAI_API_KEY=<KEY> node packages/cli/bin/z-agent.mjs -p --yes \
+    'run exactly this bash command: printenv OPENAI_API_KEY; echo exit=$?'
+
+[mode] print model=deepseek-anth(deepseek-chat) contextWindow=128000 maxTokens=8192 thinking=off cwd=/home/zeroth/ForMe/z-agent
+[tool] bash {"command":"printenv OPENAI_API_KEY; echo exit=$?"}
+exit 0
+exit=1
+[tool_end] bash error=false
+`OPENAI_API_KEY` is not set (empty `printenv` output, exit 1); the final `echo` itself succeeded with exit 0.
+
+# printenv exited 1 inside the tool: the exported OPENAI_API_KEY never reached
+# the child env, and its value appears nowhere in the transcript.
+
+## Run 2 — `--bash-timeout 2`: no timeout arg ends at the default
+
+$ node packages/cli/bin/z-agent.mjs -p --yes --bash-timeout 2 \
+    'run exactly this bash command: sleep 5; echo done'
+
+[tool] bash {"command":"sleep 5; echo done"}
+Timed out after 2 seconds
+(no output)
+[tool_end] bash error=false
+The command timed out at the default 2s limit. Running it with an explicit timeout:
+[tool] bash {"command":"sleep 5; echo done","timeout":10}
+exit 0
+done
+[tool_end] bash error=false
+done
+
+# Expiry is a normal tool result (error=false), the tree was killed, and the
+# model recovered by passing an explicit timeout under the 3600s cap.
+
+## Run 3 — `--bash-env inherit` control: operator env passes through
+
+$ OPENAI_API_KEY=<KEY> node packages/cli/bin/z-agent.mjs -p --yes --bash-env inherit \
+    'run exactly this bash command: printenv OPENAI_API_KEY; echo exit=$?'
+
+[tool] bash {"command":"printenv OPENAI_API_KEY; echo exit=$?"}
+exit 0
+<KEY>
+exit=0
+[tool_end] bash error=false
+
+# With inherit, printenv exits 0 and the exported value is visible — proving
+# run 1's empty result came from the scrub policy, not a missing variable.
+
+Unit coverage: packages/agent/test/bash-env.test.ts (policy matrix incl.
+win32 case-insensitivity), packages/agent/test/tools.test.ts (real-spawn
+scrub/inherit, default-timeout kill, clamp note), packages/cli/test/
+args.test.ts + model-settings.test.ts + system-prompt.test.ts.

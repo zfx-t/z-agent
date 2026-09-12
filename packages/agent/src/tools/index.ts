@@ -1,5 +1,5 @@
 import type { AgentTool } from "../types.ts";
-import { createBashTool } from "./bash.ts";
+import { type BashToolOptions, createBashTool } from "./bash.ts";
 import { createEditTool } from "./edit.ts";
 import { createFindTool } from "./find.ts";
 import { createGrepTool } from "./grep.ts";
@@ -8,8 +8,10 @@ import type { CodingToolsOptions } from "./options.ts";
 import { createReadTool } from "./read.ts";
 import { createWriteTool } from "./write.ts";
 
-export type { BashToolDetails, BashToolOptions } from "./bash.ts";
-export { createBashTool } from "./bash.ts";
+export type { BashTimeoutPolicy, BashToolDetails, BashToolOptions } from "./bash.ts";
+export { createBashTool, DEFAULT_BASH_TIMEOUT, resolveTimeoutMs } from "./bash.ts";
+export type { BashEnvPolicy } from "./bash-env.ts";
+export { buildChildEnv, DEFAULT_BASH_ENV_POLICY, DEFAULT_SECRET_PATTERNS, PROTECTED_KEYS } from "./bash-env.ts";
 export type { EditToolDetails, FileEdit } from "./edit.ts";
 export { applyEdits, createEditTool } from "./edit.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
@@ -25,16 +27,21 @@ export { createReadTool } from "./read.ts";
 export { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead, truncateTail } from "./truncate.ts";
 export { createWriteTool } from "./write.ts";
 
-export function createCodingTools(cwd: string, options: CodingToolsOptions = {}): AgentTool[] {
+export interface AllToolsOptions extends CodingToolsOptions {
+	/** Bash-only options (env policy, timeout policy, test seams). */
+	bash?: Omit<BashToolOptions, keyof CodingToolsOptions>;
+}
+
+export function createCodingTools(cwd: string, options: AllToolsOptions = {}): AgentTool[] {
 	return [
 		createReadTool(cwd, options),
-		createBashTool(cwd, options),
+		createBashTool(cwd, { ...options, ...options.bash }),
 		createEditTool(cwd, options),
 		createWriteTool(cwd, options),
 	];
 }
 
-export function createAllTools(cwd: string, options: CodingToolsOptions = {}): AgentTool[] {
+export function createAllTools(cwd: string, options: AllToolsOptions = {}): AgentTool[] {
 	return [
 		...createCodingTools(cwd, options),
 		createGrepTool(cwd, options),

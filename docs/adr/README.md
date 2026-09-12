@@ -27,6 +27,7 @@
 | [0025](0025-extension-surface.md) | Command registry and extension surface | Accepted |
 | [0026](0026-sqlite-op-state.md) | SQLite op.state backend | Accepted |
 | [0027](0027-multi-provider.md) | Multi-provider stream dispatch | Accepted |
+| [0029](0029-bash-env-timeout.md) | Bash env scrub and default timeout | Accepted |
 
 ## Format
 

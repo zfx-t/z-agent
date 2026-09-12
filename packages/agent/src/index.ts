@@ -26,10 +26,17 @@ export {
 } from "./emit.ts";
 export { streamAssistant } from "./stream-assistant.ts";
 export { agentToolsToLlmTools } from "./tool-json-schema.ts";
-export type { CodingToolsOptions } from "./tools/index.ts";
+export type {
+	AllToolsOptions,
+	BashEnvPolicy,
+	BashTimeoutPolicy,
+	BashToolOptions,
+	CodingToolsOptions,
+} from "./tools/index.ts";
 export {
 	applyEdits,
 	assertInsideJail,
+	buildChildEnv,
 	createAllTools,
 	createBashTool,
 	createCodingTools,
@@ -39,8 +46,11 @@ export {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	DEFAULT_BASH_ENV_POLICY,
+	DEFAULT_BASH_TIMEOUT,
 	detectImageMimeType,
 	killProcessTree,
+	resolveTimeoutMs,
 	resolveToCwd,
 	win32TaskkillArgs,
 	withFileMutationQueue,

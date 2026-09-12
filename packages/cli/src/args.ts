@@ -1,3 +1,4 @@
+import { DEFAULT_BASH_TIMEOUT } from "@z-agent/agent";
 import type { ProviderApi } from "@z-agent/ai";
 
 export const DEFAULT_MODEL_ID = "gpt-4.1-mini";
@@ -25,6 +26,8 @@ export interface CliArgs {
 	promptParts: string[];
 	contextWindow?: number;
 	maxTokens?: number;
+	bashTimeout?: number;
+	bashEnv: "scrub" | "inherit";
 	error?: string;
 }
 
@@ -48,6 +51,8 @@ export function parseArgs(argv: string[]): CliArgs {
 	const extensionPaths: string[] = [];
 	let contextWindow: number | undefined;
 	let maxTokens: number | undefined;
+	let bashTimeout: number | undefined;
+	let bashEnv: "scrub" | "inherit" = "scrub";
 	let error: string | undefined;
 	const promptParts: string[] = [];
 
@@ -102,6 +107,40 @@ export function parseArgs(argv: string[]): CliArgs {
 				break;
 			}
 			api = value as ProviderApi;
+			i += 1;
+			continue;
+		}
+		if (arg === "--bash-timeout") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				error = `Missing value for ${arg}`;
+				break;
+			}
+			const parsed = Number(value);
+			if (
+				!/^\d+$/u.test(value) ||
+				!Number.isSafeInteger(parsed) ||
+				parsed < 1 ||
+				parsed > DEFAULT_BASH_TIMEOUT.maxSeconds
+			) {
+				error = `Invalid value for ${arg} (expected 1-${DEFAULT_BASH_TIMEOUT.maxSeconds} seconds)`;
+				break;
+			}
+			bashTimeout = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg === "--bash-env") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				error = `Missing value for ${arg}`;
+				break;
+			}
+			if (value !== "scrub" && value !== "inherit") {
+				error = `Invalid value for ${arg}`;
+				break;
+			}
+			bashEnv = value;
 			i += 1;
 			continue;
 		}
@@ -188,6 +227,8 @@ export function parseArgs(argv: string[]): CliArgs {
 		promptParts,
 		contextWindow,
 		maxTokens,
+		bashTimeout,
+		bashEnv,
 		error,
 	};
 }
@@ -220,6 +261,8 @@ Flags:
   --list-sessions    List sessions for --cwd
   --context-window <n>  Override context window tokens
   --max-tokens <n>      Override max output tokens
+  --bash-timeout <n>    Bash default timeout seconds (1-3600, default 600)
+  --bash-env <mode>     Bash child env: scrub (default) | inherit
   -h, --help         Help
 
 Interactive commands:

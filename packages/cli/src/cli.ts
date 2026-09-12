@@ -4,7 +4,7 @@
 
 import { join } from "node:path";
 import { stdin } from "node:process";
-import { Agent, type AgentMessage, createAllTools } from "@z-agent/agent";
+import { Agent, type AgentMessage, createAllTools, DEFAULT_BASH_TIMEOUT } from "@z-agent/agent";
 import { createProviderStream, emptyUsage, type Model, providerForApi, type StreamFn } from "@z-agent/ai";
 import { JsonlOpStore, type OpStore, SqliteOpStore, wrapStreamFn, wrapTools } from "@z-agent/harness";
 import { InteractiveTui, type TuiCompletionCandidate, type TuiHeaderSegment } from "@z-agent/tui";
@@ -261,8 +261,19 @@ async function main(): Promise<void> {
 		}
 	}
 
+	const bashDefaultSeconds = args.bashTimeout ?? DEFAULT_BASH_TIMEOUT.defaultSeconds;
 	let streamFn: StreamFn = createProviderStream();
-	let tools = [...createAllTools(cwd, { jailRoot: jail ? cwd : false }), ...host.tools, skillManager.createReadTool()];
+	let tools = [
+		...createAllTools(cwd, {
+			jailRoot: jail ? cwd : false,
+			bash: {
+				timeout: { defaultSeconds: bashDefaultSeconds },
+				env: args.bashEnv === "inherit" ? { mode: "inherit" } : undefined,
+			},
+		}),
+		...host.tools,
+		skillManager.createReadTool(),
+	];
 	if (args.durable) {
 		const store: OpStore =
 			args.durableBackend === "sqlite"
@@ -711,6 +722,7 @@ async function main(): Promise<void> {
 				skillsMode: skillManager.getState().mode,
 				skillsActive: skillManager.getState().active.length,
 				cwd,
+				bash: `timeout ${bashDefaultSeconds}s/${DEFAULT_BASH_TIMEOUT.maxSeconds}s, env ${args.bashEnv}`,
 			}),
 		onModel: async (modelArgs) => {
 			if (modelArgs.trim().length === 0) {

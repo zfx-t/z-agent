@@ -12,7 +12,13 @@ User state lives in `~/.pillow` (override with `PILLOW_HOME`). Model aliases, th
 
 ## Flags
 
-`--cwd` `--model` `--api` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--durable-backend` `--context-window` `--max-tokens`
+`--cwd` `--model` `--api` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--durable-backend` `--context-window` `--max-tokens` `--bash-timeout` `--bash-env`
+
+Bash tool policy: the child env is scrubbed of secret-shaped variables
+(`*_API_KEY`, `*_TOKEN`, `DATABASE_URL`, …) by default — `--bash-env inherit`
+passes the operator env through. Commands default to a 600s timeout and clamp
+at 3600s; `--bash-timeout <1-3600>` changes the default. `/status` shows the
+active bash policy.
 
 Provider dialect: catalog entry `api` or `--api` selects `openai-responses`
 (default), `openai-completions`, or `anthropic-messages`. Keys resolve per api:

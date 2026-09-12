@@ -7,55 +7,80 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { z } from "zod";
 import type { AgentTool, AgentToolResult } from "../types.ts";
+import { type BashEnvPolicy, buildChildEnv } from "./bash-env.ts";
 import { defaultKillProcessTree, killProcessTree, type ProcessKiller } from "./kill-process-tree.ts";
 import { type CodingToolsOptions, resolveJailRoot, throwIfAborted } from "./options.ts";
 import { resolveToolPath } from "./path.ts";
 import { DEFAULT_MAX_BYTES, truncateTail, truncationNotice } from "./truncate.ts";
 
-const bashSchema = z.object({
-	command: z.string().describe("Bash command to execute"),
-	timeout: z.number().optional().describe("Timeout in seconds (optional, no default timeout)"),
-});
+const bashSchema = (timeout: BashTimeoutPolicy) =>
+	z.object({
+		command: z.string().describe("Bash command to execute"),
+		timeout: z
+			.number()
+			.optional()
+			.describe(
+				`Timeout in seconds (default ${timeout.defaultSeconds}, max ${timeout.maxSeconds}). Long jobs: pass an explicit timeout or background the process.`,
+			),
+	});
 
 export interface BashToolDetails {
 	exitCode: number | null;
 	truncated?: boolean;
 }
 
+export interface BashTimeoutPolicy {
+	defaultSeconds: number;
+	maxSeconds: number;
+}
+
+export const DEFAULT_BASH_TIMEOUT: BashTimeoutPolicy = { defaultSeconds: 600, maxSeconds: 3600 };
+
 export interface BashToolOptions extends CodingToolsOptions {
 	/** Injected killer for tests. */
 	kill?: ProcessKiller;
+	/** Child environment policy; default scrubs secret-shaped variables. */
+	env?: BashEnvPolicy;
+	/** Bash timeout defaults/cap; merged over {@link DEFAULT_BASH_TIMEOUT}. */
+	timeout?: Partial<BashTimeoutPolicy>;
+	/** Injected for tests; defaults to process.env. */
+	sourceEnv?: NodeJS.ProcessEnv;
 }
 
-function resolveTimeoutMs(timeout: number | undefined): number | undefined {
-	if (timeout === undefined) {
-		return undefined;
+export function resolveTimeoutMs(
+	requested: number | undefined,
+	policy: BashTimeoutPolicy,
+): { ms: number; clamped: boolean } {
+	if (requested === undefined) {
+		return { ms: Math.min(policy.defaultSeconds, policy.maxSeconds) * 1000, clamped: false };
 	}
-	if (!Number.isFinite(timeout) || timeout <= 0) {
+	if (!Number.isFinite(requested) || requested <= 0) {
 		throw new Error("Invalid timeout: must be a finite number of seconds");
 	}
-	const timeoutMs = timeout * 1000;
+	const seconds = Math.min(requested, policy.maxSeconds);
+	const timeoutMs = seconds * 1000;
 	if (timeoutMs > 2_147_483_647) {
 		throw new Error("Invalid timeout: too large");
 	}
-	return timeoutMs;
+	return { ms: timeoutMs, clamped: seconds < requested };
 }
 
 async function runCommand(
 	command: string,
 	cwd: string,
 	signal: AbortSignal | undefined,
-	timeoutMs: number | undefined,
+	timeoutMs: number,
+	env: NodeJS.ProcessEnv,
 	kill: ProcessKiller,
-): Promise<{ exitCode: number | null; output: string }> {
+): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
 	throwIfAborted(signal);
 
-	const shell = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "/bin/bash";
+	const shell = process.platform === "win32" ? (env.ComSpec ?? "cmd.exe") : "/bin/bash";
 	const args = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 	const child = spawn(shell, args, {
 		cwd,
 		detached: process.platform !== "win32",
-		env: process.env,
+		env,
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
 	});
@@ -98,12 +123,10 @@ async function runCommand(
 			signal.addEventListener("abort", onAbort, { once: true });
 		}
 	}
-	if (timeoutMs !== undefined) {
-		timeoutHandle = setTimeout(() => {
-			timedOut = true;
-			onAbort();
-		}, timeoutMs);
-	}
+	timeoutHandle = setTimeout(() => {
+		timedOut = true;
+		onAbort();
+	}, timeoutMs);
 
 	try {
 		const exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -116,12 +139,16 @@ async function runCommand(
 		});
 		throwIfAborted(signal);
 		if (timedOut) {
-			const seconds = (timeoutMs ?? 0) / 1000;
-			throw new Error(`Timed out after ${seconds} seconds`);
+			return {
+				exitCode: null,
+				output: Buffer.concat(chunks).toString("utf-8"),
+				timedOut: true,
+			};
 		}
 		return {
 			exitCode,
 			output: Buffer.concat(chunks).toString("utf-8"),
+			timedOut: false,
 		};
 	} finally {
 		if (timeoutHandle) {
@@ -134,17 +161,18 @@ async function runCommand(
 export function createBashTool(
 	cwd: string,
 	options: BashToolOptions = {},
-): AgentTool<typeof bashSchema, BashToolDetails> {
+): AgentTool<ReturnType<typeof bashSchema>, BashToolDetails> {
 	const jailRoot = resolveJailRoot(cwd, options.jailRoot);
 	const kill = options.kill ?? defaultKillProcessTree;
+	const timeoutPolicy: BashTimeoutPolicy = { ...DEFAULT_BASH_TIMEOUT, ...options.timeout };
 	return {
 		name: "bash",
 		label: "Bash",
 		description:
 			"Execute a bash command in the working directory. Returns stdout and stderr. Output is truncated to the last 2000 lines or 50KB. Jail (when enabled) only requires the working directory to be inside the jail; the command itself can still access paths outside it.",
-		parameters: bashSchema,
+		parameters: bashSchema(timeoutPolicy),
 		async execute(_toolCallId, params, signal): Promise<AgentToolResult<BashToolDetails>> {
-			const timeoutMs = resolveTimeoutMs(params.timeout);
+			const { ms: timeoutMs, clamped } = resolveTimeoutMs(params.timeout, timeoutPolicy);
 			if (jailRoot !== false) {
 				await resolveToolPath(".", cwd, jailRoot);
 			}
@@ -153,11 +181,27 @@ export function createBashTool(
 			} catch {
 				throw new Error(`Working directory does not exist: ${cwd}`);
 			}
-			const { exitCode, output } = await runCommand(params.command, cwd, signal, timeoutMs, kill);
+			const childEnv = buildChildEnv(options.sourceEnv ?? process.env, options.env, process.platform);
+			const { exitCode, output, timedOut } = await runCommand(
+				params.command,
+				cwd,
+				signal,
+				timeoutMs,
+				childEnv,
+				kill,
+			);
 			const truncation = truncateTail(output);
 			const notice = truncationNotice(truncation, "tail");
 			const body = truncation.content.length > 0 ? truncation.content : "(no output)";
-			const parts = [`exit ${exitCode ?? "null"}`, body];
+			const parts: string[] = [];
+			if (clamped) {
+				parts.push(`Note: timeout clamped to ${timeoutPolicy.maxSeconds}s.`);
+			}
+			if (timedOut) {
+				parts.push(`Timed out after ${timeoutMs / 1000} seconds`, body);
+			} else {
+				parts.push(`exit ${exitCode ?? "null"}`, body);
+			}
 			if (notice) {
 				parts.push(notice);
 			}

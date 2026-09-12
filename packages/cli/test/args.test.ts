@@ -58,6 +58,21 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--context-window", "12345678901234567890"]).error).toBe("Invalid value for --context-window");
 		expect(parseArgs(["--max-tokens"]).error).toBe("Missing value for --max-tokens");
 	});
+
+	it("parses bash timeout and env flags", () => {
+		const empty = parseArgs([]);
+		expect(empty.bashTimeout).toBeUndefined();
+		expect(empty.bashEnv).toBe("scrub");
+		expect(parseArgs(["--bash-timeout", "120"]).bashTimeout).toBe(120);
+		expect(parseArgs(["--bash-timeout", "0"]).error).toContain("--bash-timeout");
+		expect(parseArgs(["--bash-timeout", "5000"]).error).toContain("3600");
+		expect(parseArgs(["--bash-timeout", "abc"]).error).toContain("--bash-timeout");
+		expect(parseArgs(["--bash-timeout"]).error).toBe("Missing value for --bash-timeout");
+		expect(parseArgs(["--bash-env", "inherit"]).bashEnv).toBe("inherit");
+		expect(parseArgs(["--bash-env", "scrub"]).bashEnv).toBe("scrub");
+		expect(parseArgs(["--bash-env", "yolo"]).error).toBe("Invalid value for --bash-env");
+		expect(parseArgs(["--bash-env"]).error).toBe("Missing value for --bash-env");
+	});
 });
 
 describe("looksLikeReasoningModel / resolveModelId / help", () => {
@@ -86,6 +101,8 @@ describe("looksLikeReasoningModel / resolveModelId / help", () => {
 		expect(help).toContain("--list-models");
 		expect(help).toContain("--context-window");
 		expect(help).toContain("--max-tokens");
+		expect(help).toContain("--bash-timeout");
+		expect(help).toContain("--bash-env");
 		expect(help).toContain("OPENAI_CONTEXT_WINDOW");
 	});
 });

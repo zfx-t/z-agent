@@ -15,6 +15,7 @@ Tools:
 - ls: list a directory.
 
 Prefer read/edit/grep over shell equivalents.
+Bash commands have a default timeout; for long jobs pass an explicit timeout or run them in the background.
 Do not tell the user to run a command you can run yourself.
 Keep answers short and technical.`;
 }
