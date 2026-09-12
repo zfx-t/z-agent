@@ -12,6 +12,17 @@ export interface CompactionOptions {
 	keepRecentTokens?: number;
 	streamFn?: StreamFn;
 	model?: Model;
+	/** Pure callback for diagnostics (ADR-0031); fires after each apply. */
+	onCompaction?: (info: CompactionInfo) => void;
+}
+
+/** Diagnostics payload for one compaction run. */
+export interface CompactionInfo {
+	dropped: number;
+	kept: number;
+	estBefore: number;
+	estAfter: number;
+	reason: "threshold" | "length";
 }
 
 const DEFAULT_WINDOW = 128_000;
@@ -103,13 +114,13 @@ export function splitKeptTail(
 export async function compactMessages(
 	messages: AgentMessage[],
 	options: CompactionOptions = {},
-): Promise<{ kept: AgentMessage[]; summary: string }> {
+): Promise<{ kept: AgentMessage[]; dropped: AgentMessage[]; summary: string }> {
 	const { kept, dropped } = splitKeptTail(messages, options);
 	let summary = fallbackSummary(dropped, kept);
 	if (options.streamFn && options.model && dropped.length > 0) {
 		summary = await summarizeDropped(dropped, options.streamFn, options.model);
 	}
-	return { kept, summary };
+	return { kept, dropped, summary };
 }
 
 export async function applyCompactionToSession(
@@ -122,5 +133,12 @@ export async function applyCompactionToSession(
 }> {
 	const result = await compactMessages(messages, options);
 	appendCompaction(session, result.summary);
-	return result;
+	options?.onCompaction?.({
+		dropped: result.dropped.length,
+		kept: result.kept.length,
+		estBefore: estimateTokens(messages),
+		estAfter: estimateTokens(result.kept),
+		reason: hasOverflowStop(messages) ? "length" : "threshold",
+	});
+	return { kept: result.kept, summary: result.summary };
 }

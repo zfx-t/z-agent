@@ -2,6 +2,7 @@
  * z-agent product CLI: TUI + print, coding tools, sessions, skills, optional L5.
  */
 
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stdin } from "node:process";
 import { Agent, type AgentMessage, createAllTools, DEFAULT_BASH_TIMEOUT } from "@z-agent/agent";
@@ -22,6 +23,8 @@ import {
 	resolveThinking,
 } from "./config.ts";
 import { createConfirmGate } from "./confirm.ts";
+import { type CrashGuard, createCrashGuard } from "./crash-guard.ts";
+import { createDiagnostics, resolveDiagnosticsMode } from "./diagnostics.ts";
 import { createExtensionHost } from "./extension-host.ts";
 import { composeBefore, discoverExtensionPaths } from "./extensions.ts";
 import { runInteractive, submitTuiInputDuringRun } from "./interactive.ts";
@@ -36,7 +39,7 @@ import {
 	modelSettingsView,
 	reduceModelSettings,
 } from "./model-settings.ts";
-import { prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
+import { pillowLogsDir, prepareProjectPillow, prepareUserPillow } from "./pillow-home.ts";
 import { runPrint } from "./print.ts";
 import {
 	appendMessage,
@@ -64,6 +67,21 @@ import {
 import { buildCodingSystemPrompt } from "./system-prompt.ts";
 import { replayTranscript } from "./transcript.ts";
 import { askYesNo, ensureProjectTrust } from "./trust.ts";
+
+/** The guard of the in-flight run, so main()'s rejection can route through it. */
+let activeCrashGuard: CrashGuard | undefined;
+
+async function cliVersion(): Promise<string> {
+	try {
+		const pkg: unknown = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+		if (typeof pkg === "object" && pkg !== null && "version" in pkg && typeof pkg.version === "string") {
+			return pkg.version;
+		}
+	} catch {
+		// fall through — version is informational only
+	}
+	return "unknown";
+}
 
 async function readStdinText(): Promise<string> {
 	const chunks: Buffer[] = [];
@@ -236,6 +254,41 @@ async function main(): Promise<void> {
 		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
 	});
 	const projectPillow = join(cwd, ".pillow");
+	const diag = createDiagnostics({
+		mode: resolveDiagnosticsMode(args.debug, process.env),
+		logsDir: pillowLogsDir(userPillow),
+		sessionId: session.header.id,
+		thinkingLevel: () => settings.thinking,
+	});
+	const runStartedAt = Date.now();
+	let turnCount = 0;
+	// The guard covers everything below — including extension loading, session
+	// restore, and the TUI window before the agent exists. `crashTui`/`crashPersist`
+	// are bound as the real objects come into existence.
+	let crashTui: InteractiveTui | undefined;
+	let crashPersist: (() => Promise<void>) | undefined;
+	const guard = createCrashGuard({
+		restoreTerminal: () => {
+			crashTui?.close();
+		},
+		persistSession: async () => {
+			if (crashPersist === undefined) {
+				throw new Error("session persist not yet initialized");
+			}
+			await crashPersist();
+		},
+		log: (fields) => diag.log("crash", fields),
+		flush: () => diag.flush(),
+		stderr: (line) => {
+			process.stderr.write(`${line}\n`);
+		},
+		exit: (code) => {
+			process.exit(code);
+		},
+		logPath: diag.path,
+	});
+	activeCrashGuard = guard;
+	guard.install(process);
 	const extensionPaths = [...(await discoverExtensionPaths(cwd)), ...args.extensionPaths];
 	const trusted =
 		extensionPaths.length === 0
@@ -262,7 +315,15 @@ async function main(): Promise<void> {
 	}
 
 	const bashDefaultSeconds = args.bashTimeout ?? DEFAULT_BASH_TIMEOUT.defaultSeconds;
-	let streamFn: StreamFn = createProviderStream();
+	let streamFn: StreamFn = createProviderStream({
+		retry: args.noRetry ? false : undefined,
+		onRetry: (event) => {
+			if (args.verbose) {
+				console.error(`[retry ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.reason}]`);
+			}
+			diag.log("provider.retry", { ...event });
+		},
+	});
 	let tools = [
 		...createAllTools(cwd, {
 			jailRoot: jail ? cwd : false,
@@ -274,13 +335,18 @@ async function main(): Promise<void> {
 		...host.tools,
 		skillManager.createReadTool(),
 	];
+	let opStore: SqliteOpStore | undefined;
 	if (args.durable) {
-		const store: OpStore =
-			args.durableBackend === "sqlite"
-				? new SqliteOpStore(join(projectPillow, "harness"))
-				: new JsonlOpStore(join(projectPillow, "harness"));
-		streamFn = wrapStreamFn(streamFn, store);
-		tools = wrapTools(tools, store);
+		let store: OpStore;
+		if (args.durableBackend === "sqlite") {
+			opStore = new SqliteOpStore(join(projectPillow, "harness"));
+			store = opStore;
+		} else {
+			store = new JsonlOpStore(join(projectPillow, "harness"));
+		}
+		const wrapOptions = { resume: { interruptedTool: args.durableInterruptedTool } };
+		streamFn = wrapStreamFn(streamFn, store, wrapOptions);
+		tools = wrapTools(tools, store, wrapOptions);
 	}
 
 	let agent!: Agent;
@@ -367,6 +433,7 @@ async function main(): Promise<void> {
 				},
 			})
 		: undefined;
+	crashTui = tui;
 
 	// Fresh session by default; earlier sessions are reachable via /sessions.
 	if (tui && !args.session && !args.resume && !args.continueSession) {
@@ -406,9 +473,20 @@ async function main(): Promise<void> {
 		contextWindow: resolved.hasModel ? resolved.contextWindow : undefined,
 		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
 	};
+	if (diag.enabled) {
+		diag.log("run.start", {
+			mode: usePrint ? "print" : "tui",
+			model: model.id,
+			api: model.api,
+			cwd,
+			durable: args.durable,
+			version: await cliVersion(),
+		});
+	}
 	agent = new Agent({
 		streamFn,
 		apiKey,
+		sessionId: session.header.id,
 		maxTokens: resolved.hasModel ? resolved.maxTokens : undefined,
 		prepareQueuedMessages: async (messages) => {
 			for (const message of messages) {
@@ -586,10 +664,14 @@ async function main(): Promise<void> {
 		onReload: () => tui?.refreshCompletions(),
 	});
 	host.bindAgent(agent);
+	agent.subscribe(diag.onAgentEvent);
 	agent.subscribe((event) => {
 		if (event.type === "message_end" && "role" in event.message && event.message.role === "assistant") {
 			contextUsage = event.message.usage;
 			totalUsage = accumulateAssistantUsage(totalUsage, event.message.usage);
+		}
+		if (event.type === "turn_end") {
+			turnCount += 1;
 		}
 	});
 	const resetContextUsage = (): void => {
@@ -608,6 +690,7 @@ async function main(): Promise<void> {
 			contextWindow: agent.state.model.contextWindow,
 			streamFn,
 			model: agent.state.model,
+			onCompaction: (info) => diag.log("compaction", { ...info }),
 		});
 		agent.state.messages = [
 			{ role: "user", content: [{ type: "text", text: summary }], timestamp: Date.now() },
@@ -625,10 +708,25 @@ async function main(): Promise<void> {
 		}
 		await saveSession(session, sessionRoot);
 	};
+	crashPersist = persist;
+
+	/** run.end + flush + guard teardown before every deliberate exit point. */
+	const finishRun = async (exitCode: number): Promise<void> => {
+		diag.log("run.end", { exitCode, turns: turnCount, durationMs: Date.now() - runStartedAt });
+		await diag.flush();
+		opStore?.close();
+		guard.uninstall();
+		if (activeCrashGuard === guard) {
+			activeCrashGuard = undefined;
+		}
+		abort.detach();
+	};
 
 	if (usePrint) {
 		if (!prompt) {
 			console.error("error: prompt required");
+			await persist();
+			await finishRun(2);
 			process.exit(2);
 		}
 		console.error(
@@ -639,14 +737,14 @@ async function main(): Promise<void> {
 			if (!resolved.hasModel) {
 				console.error(NO_MODEL_WARNING);
 				await persist();
-				abort.detach();
+				await finishRun(1);
 				process.exit(1);
 			}
 			if (!apiKey) {
 				const keyEnv = resolved.api === "anthropic-messages" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
 				console.error(`error: ${keyEnv} is required (or set apiKey in ~/.pillow/config.json)`);
 				await persist();
-				abort.detach();
+				await finishRun(1);
 				process.exit(1);
 			}
 			await runPrint(agent, printInput.message, args.verbose);
@@ -654,23 +752,25 @@ async function main(): Promise<void> {
 			const name = printInput.kind === "builtin" ? printInput.name : `/${printInput.kind}`;
 			console.error(`error: ${name} is only available in interactive mode`);
 			await persist();
-			abort.detach();
+			await finishRun(2);
 			process.exit(2);
 		} else if (printInput.error) {
 			await persist();
-			abort.detach();
+			await finishRun(2);
 			process.exit(2);
 		}
 		await persist();
-		abort.detach();
 		if (agent.state.errorMessage) {
 			console.error(`[error] ${agent.state.errorMessage}`);
+			await finishRun(1);
 			process.exit(1);
 		}
+		await finishRun(0);
 		return;
 	}
 
 	if (!tui) {
+		await finishRun(1);
 		process.exit(1);
 	}
 	const interactiveOptions: Parameters<typeof runInteractive>[0] = {
@@ -683,6 +783,7 @@ async function main(): Promise<void> {
 			await persist();
 			session = createSession(cwd);
 			await skillManager.setSession(session);
+			agent.sessionId = session.header.id;
 			agent.reset();
 			resetContextUsage();
 		},
@@ -712,6 +813,7 @@ async function main(): Promise<void> {
 			}
 			session = nodeId ? branch(loaded, nodeId) : loaded;
 			await skillManager.setSession(session);
+			agent.sessionId = session.header.id;
 			await saveSession(session, sessionRoot);
 			resetContextUsage();
 			return messagesOnLeaf(session);
@@ -723,6 +825,10 @@ async function main(): Promise<void> {
 				skillsActive: skillManager.getState().active.length,
 				cwd,
 				bash: `timeout ${bashDefaultSeconds}s/${DEFAULT_BASH_TIMEOUT.maxSeconds}s, env ${args.bashEnv}`,
+				durable: args.durable
+					? `${args.durableBackend} (interrupted tool: ${args.durableInterruptedTool})`
+					: undefined,
+				logPath: diag.path,
 			}),
 		onModel: async (modelArgs) => {
 			if (modelArgs.trim().length === 0) {
@@ -734,10 +840,14 @@ async function main(): Promise<void> {
 	};
 	await runInteractive(interactiveOptions);
 	await persist();
-	abort.detach();
+	await finishRun(0);
 }
 
 main().catch((err: unknown) => {
+	if (activeCrashGuard) {
+		void activeCrashGuard.handle("main", err);
+		return;
+	}
 	console.error(err instanceof Error ? err.message : err);
 	process.exit(1);
 });

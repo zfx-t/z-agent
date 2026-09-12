@@ -1669,6 +1669,32 @@ describe("InteractiveTui", () => {
 		await expect(prompt).resolves.toBe("ab!");
 		tui.close();
 	});
+
+	it("close() is idempotent and writes LEAVE_ALT exactly once", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 40,
+			rows: 10,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = {
+			isTTY: false,
+			on() {},
+			off() {},
+			pause() {},
+			setRawMode() {},
+		} as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout });
+		tui.start();
+		tui.close();
+		tui.close();
+		const output = writes.join("");
+		expect(output.split(`${ESC}[?1049l`)).toHaveLength(2);
+		expect(output).toContain(`${ESC}[?25h`);
+	});
 });
 
 const ESC = "\u001b";

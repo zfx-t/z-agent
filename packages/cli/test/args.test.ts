@@ -50,6 +50,16 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--durable-backend", "memory"]).error).toBe("Invalid value for --durable-backend");
 	});
 
+	it("parses durable interrupted-tool policy", () => {
+		expect(parseArgs(["--durable"]).durableInterruptedTool).toBe("fail");
+		expect(parseArgs(["--durable-interrupted-tool", "rerun"]).durableInterruptedTool).toBe("rerun");
+		expect(parseArgs(["--durable-interrupted-tool", "fail"]).durableInterruptedTool).toBe("fail");
+		expect(parseArgs(["--durable-interrupted-tool", "skip"]).error).toBe(
+			"Invalid value for --durable-interrupted-tool",
+		);
+		expect(parseArgs(["--durable-interrupted-tool"]).error).toBe("Missing value for --durable-interrupted-tool");
+	});
+
 	it("parses context window and max token flags", () => {
 		const args = parseArgs(["--context-window", "200000", "--max-tokens", "8192"]);
 		expect(args.contextWindow).toBe(200_000);
@@ -72,6 +82,16 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--bash-env", "scrub"]).bashEnv).toBe("scrub");
 		expect(parseArgs(["--bash-env", "yolo"]).error).toBe("Invalid value for --bash-env");
 		expect(parseArgs(["--bash-env"]).error).toBe("Missing value for --bash-env");
+	});
+
+	it("parses --no-retry", () => {
+		expect(parseArgs([]).noRetry).toBe(false);
+		expect(parseArgs(["--no-retry"]).noRetry).toBe(true);
+	});
+
+	it("parses --debug", () => {
+		expect(parseArgs([]).debug).toBe(false);
+		expect(parseArgs(["--debug"]).debug).toBe(true);
 	});
 });
 
@@ -103,6 +123,9 @@ describe("looksLikeReasoningModel / resolveModelId / help", () => {
 		expect(help).toContain("--max-tokens");
 		expect(help).toContain("--bash-timeout");
 		expect(help).toContain("--bash-env");
+		expect(help).toContain("--no-retry");
+		expect(help).toContain("--debug");
+		expect(help).toContain("PILLOW_DEBUG");
 		expect(help).toContain("OPENAI_CONTEXT_WINDOW");
 	});
 });

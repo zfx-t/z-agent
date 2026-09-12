@@ -1,0 +1,132 @@
+# diagnostics log + crash guard — live acceptance (ADR-0031)
+# Date: 2026-09-12. Local stub server (node:http), no external provider.
+# Scratch dir: /tmp/zdiag; PILLOW_HOME=/tmp/zdiag/pillow; cwd=/tmp/zdiag/work.
+# CLI entry: node --experimental-strip-types packages/cli/src/cli.ts
+# (bin/z-agent.mjs re-execs the same entry; used for run 1).
+
+## Run 1 — `-p --debug` against a tool-call stub
+
+Stub returns a function_call item for request #1 (bash `echo evidence-ok`),
+then a plain completed response for request #2.
+
+$ OPENAI_API_KEY=sk-test OPENAI_BASE_URL=http://127.0.0.1:$PORT \
+    OPENAI_CONTEXT_WINDOW=200000 PILLOW_HOME=/tmp/zdiag/pillow \
+    node packages/cli/bin/z-agent.mjs -p --debug --model stub-model "list files"
+
+[mode] print model=stub-model contextWindow=200000 maxTokens=unknown thinking=off cwd=/tmp/zdiag/work
+[tool] bash {"command":"echo evidence-ok"}
+exit 0
+evidence-ok
+[tool_end] bash error=false
+EXIT=0
+
+$ cat /tmp/zdiag/pillow/logs/2026-09-13/<sessionId>.jsonl   # file mode 600, day dir 700
+
+{"ts":"…46.016Z","seq":1,"kind":"run.start","sessionId":"…","mode":"print","model":"stub-model","api":"openai-responses","cwd":"/tmp/zdiag/work","durable":false,"version":"0.0.0"}
+{"ts":"…46.104Z","seq":2,"kind":"provider.request","turn":1,"model":"stub-model","api":"openai-responses","messages":1,"estTokens":23,"thinking":"off"}
+{"ts":"…46.107Z","seq":3,"kind":"provider.response","turn":1,"stopReason":"toolUse","durationMs":3,"usage":{"input":10,"output":4,"cacheRead":0,"cacheWrite":0}}
+{"ts":"…46.108Z","seq":4,"kind":"tool.start","toolCallId":"call_1","name":"bash","argKeys":["command"]}
+{"ts":"…46.125Z","seq":5,"kind":"tool.end","toolCallId":"call_1","name":"bash","durationMs":17,"isError":false,"outputChars":19}
+{"ts":"…46.126Z","seq":6,"kind":"loop.turn","turn":1,"hasToolCalls":true,"steeringDrained":0,"followUpDrained":0}
+{"ts":"…46.134Z","seq":7,"kind":"provider.request","turn":2,"messages":3,"estTokens":179,"thinking":"off"}
+{"ts":"…46.135Z","seq":8,"kind":"provider.response","turn":2,"stopReason":"stop","durationMs":1,"usage":{"input":8,"output":2}}
+{"ts":"…46.135Z","seq":9,"kind":"loop.turn","turn":2,"hasToolCalls":false}
+{"ts":"…46.138Z","seq":10,"kind":"run.end","exitCode":0,"turns":2,"durationMs":126}
+
+# argKeys carries only the key name — `echo evidence-ok` never reaches the log;
+# grep for the api key finds nothing:
+$ grep -c 'sk-test' <log>   →  0
+
+## Run 2 — extension throws during a run (print mode, hang stub)
+
+Extension: `export function createExtension() { setTimeout(() => { throw new
+Error("extension boom") }, 30); return {}; }`. Stub hangs after headers so the
+turn is in flight when the fault lands.
+
+$ … z-agent -p --debug --model stub-model --extension /tmp/zdiag/crash-ext.mjs "say hi"
+
+z-agent crashed: extension boom (log: /tmp/zdiag/pillow/logs/2026-09-13/<sid>.jsonl)
+EXIT=1
+
+crash record (seq 2, after run.start):
+{"kind":"crash","source":"uncaughtException","message":"extension boom",
+ "stack":"Error: extension boom\n    at Timeout._onTimeout …/crash-ext.mjs:3:9 …",
+ "terminalRestored":true,"sessionPersisted":true}
+
+## Run 3 — TUI crash under a pty (script(1))
+
+`script -qefc` allocates a real pty; `printf 'say hi\r'` is piped in so a turn
+is running. Extension throws at 400ms. The typescript capture ends with the
+restore sequence emitted exactly once, then the one-line crash:
+
+  … "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?2004l\x1b[?1049l"
+  z-agent crashed: tui extension boom (log: …/mtylieow-zk8zvr.jsonl)
+  COMMAND_EXIT_CODE="1"
+
+Alt-screen off (`?1049l`), bracketed paste off (`?2004l`), cursor restored
+(`?25h`), mouse reporting off — the shell prompt is usable afterwards.
+The session file has the in-flight turn's user message:
+
+$ cat ~/.pillow/sessions/--_tmp_zdiag_work--/mtylieow-zk8zvr.jsonl
+{"type":"header","id":"mtylieow-zk8zvr","cwd":"/tmp/zdiag/work",…}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"say hi"}]}}
+
+and the log's crash record: {"kind":"crash","source":"uncaughtException",
+"message":"tui extension boom","terminalRestored":true,"sessionPersisted":true}
+
+## Run 4 — SIGTERM during a hung stream
+
+`timeout --preserve-status -s TERM 1.2s` delivers SIGTERM mid-stream:
+
+z-agent crashed: SIGTERM (log: /tmp/zdiag/pillow/logs/2026-09-13/<sid>.jsonl)
+EXIT=143
+
+crash record: {"kind":"crash","source":"SIGTERM","message":"SIGTERM",
+"terminalRestored":true,"sessionPersisted":true}
+
+## Run 5 — no --debug → no logs/ directory
+
+$ ls /tmp/zdiag/pillow-plain          # fresh PILLOW_HOME
+$ … z-agent -p --model stub-model "say hi"   (no --debug) → EXIT=0
+$ ls /tmp/zdiag/pillow-plain
+config.json  sessions                 # no logs/
+
+## Unit/task evidence (vitest)
+
+- diagnostics.test.ts: 21 tests — redact key/value/cycle coverage (incl.
+  estTokens surviving the `token` boundary rule, and mid-string secrets like
+  `invalid key sk-…` inside an errorMessage scrubbed without eating
+  lookalikes such as `ask-…`), path layout, 0700/0600,
+  rotation (7-day boundary, 50-file trim, non-matching entries untouched),
+  no-op when off, seq/order, warn-once on write failure, full tool-turn
+  event mapping, verbose sizes-not-text, errorMessage, steering vs follow-up
+  attribution.
+- crash-guard.test.ts: 13 tests — fixed shutdown order, 2s persist and 500ms
+  flush deadlines (manual timer doubles, zero pending timers), restoreTerminal
+  throw still persists+exits, second-fault skips to stderr+exit, non-Error
+  reasons, signal codes 143/129, install/uninstall listener bookkeeping.
+- args.test.ts +1, model-settings.test.ts +1, pillow-home.test.ts +1,
+  compaction.test.ts +2 (onCompaction info, reason length|threshold),
+  interactive.test.ts +1 (close-on-throw), tui.test.ts +1 (close idempotent,
+  LEAVE_ALT once), smoke.test.ts +2 (real CLI + SSE stub: ordered record
+  stream; no logs/ without --debug).
+- `npm run check` clean (biome + tsc across all six packages).
+
+# Contract deviation: ProcessLike listeners take `(...args: unknown[])` — the
+# `never[]` in the contract map cannot accept a real EventEmitter/process.
+
+# Post-review hardening (2026-09-12): the guard is now installed immediately
+# after the diagnostics sink exists, before extension discovery, the trust
+# prompt, session restore and tui.start(). `restoreTerminal`/`persistSession`
+# bind lazily (crashTui/crashPersist), so a fault anywhere after install —
+# including the previously uncovered window between tui.start() and agent
+# construction — still restores the terminal, records a crash line and exits
+# through the ordered shutdown. Pre-session early exits (bad flags, --help,
+# list commands) still exit directly.
+
+Verified live (2026-09-12): `timeout -s TERM --preserve-status 0.7` against
+`-p --debug` — SIGTERM lands after install but while the provider fetch is in
+flight → `z-agent crashed: SIGTERM (log: …)` + crash record
+{terminalRestored:true, sessionPersisted:true} + EXIT=143. Signals arriving
+during module load (before main() runs) still exit 143 via default
+disposition — no handler can exist that early.

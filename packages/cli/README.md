@@ -12,7 +12,7 @@ User state lives in `~/.pillow` (override with `PILLOW_HOME`). Model aliases, th
 
 ## Flags
 
-`--cwd` `--model` `--api` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--durable-backend` `--context-window` `--max-tokens` `--bash-timeout` `--bash-env`
+`--cwd` `--model` `--api` `--yes` `--no-jail` `-p` `--verbose` `--resume` `--continue` `--session` `--session-dir` `--extension` `--durable` `--durable-backend` `--context-window` `--max-tokens` `--bash-timeout` `--bash-env` `--no-retry` `--debug`
 
 Bash tool policy: the child env is scrubbed of secret-shaped variables
 (`*_API_KEY`, `*_TOKEN`, `DATABASE_URL`, …) by default — `--bash-env inherit`
@@ -133,3 +133,30 @@ register commands, tools, status segments, tool renderers, and `on(event)`
 listeners. Hook-only `createExtension()` modules still load. Extensions cannot
 override built-in commands. Extension tools always confirm unless `--yes`.
 Load and runtime failures become local warnings.
+
+## Diagnostics and crashes
+
+`--debug` (or `PILLOW_DEBUG=1`) writes a structured JSONL event log to
+`~/.pillow/logs/<YYYY-MM-DD>/<sessionId>.jsonl`; `PILLOW_DEBUG=verbose` adds
+size fields (`textChars`, `argsChars`) and tool argument key names. `/status`
+shows the active `log:` path.
+
+Records: `run.start`, `provider.request`, `provider.retry`,
+`provider.response`, `tool.start`, `tool.end`, `loop.turn`, `compaction`,
+`crash`, `run.end`. Day directories are `0700` and files `0600`; rotation
+keeps 7 days and the newest 50 files per day. Every field is redacted:
+secret-shaped keys (`apiKey`, `authorization`, `token`, `password`, …) and
+values (`sk-…`, `ghp-…`, `xox…`) become `[redacted]`, and message text or
+tool argument values are never written. When diagnostics are off nothing is
+created — no directory, no handle.
+
+To attach a log to a bug report: rerun with `--debug`, then send the newest
+file under `~/.pillow/logs/`.
+
+On `uncaughtException`, `unhandledRejection`, `SIGTERM`, or `SIGHUP` the
+crash guard restores the terminal (alt-screen, bracketed paste, cursor),
+persists the session within a 2s deadline, writes a `crash` record, prints
+one stderr line, and exits `1`/`143`/`129`. `SIGINT` is unchanged — first
+Ctrl-C aborts the run, second exits `130`. Note for extension authors: an
+`unhandledRejection` originating in extension code now terminates the
+process — keep extension promises awaited or caught.

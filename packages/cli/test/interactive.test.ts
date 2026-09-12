@@ -287,4 +287,24 @@ describe("interactive TUI adaptation", () => {
 		expect(restore).not.toHaveBeenCalled();
 		expect(reset).not.toHaveBeenCalled();
 	});
+
+	it("still closes the tui once when the prompt loop throws", async () => {
+		const tui = {
+			start: vi.fn(),
+			close: vi.fn(),
+			appendLine: vi.fn(),
+			appendNotice: vi.fn(),
+			readPrompt: async (): Promise<string | null> => {
+				throw new Error("tty died");
+			},
+		} as unknown as InteractiveTui;
+		const agent = {
+			prompt: vi.fn(),
+			subscribe: () => () => {},
+			state: {},
+		} as unknown as Agent;
+
+		await expect(runInteractive({ agent, tui })).rejects.toThrow("tty died");
+		expect(tui.close).toHaveBeenCalledOnce();
+	});
 });

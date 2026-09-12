@@ -1,7 +1,16 @@
 import type { AgentMessage } from "@z-agent/agent";
 import { createAssistantMessageEventStream, type StreamFn } from "@z-agent/ai";
 import { describe, expect, it } from "vitest";
-import { compactMessages, estimateTokens, hasOverflowStop, needsCompaction, shouldCompact } from "../src/compaction.ts";
+import {
+	applyCompactionToSession,
+	type CompactionInfo,
+	compactMessages,
+	estimateTokens,
+	hasOverflowStop,
+	needsCompaction,
+	shouldCompact,
+} from "../src/compaction.ts";
+import { createSession } from "../src/sessions.ts";
 
 function user(text: string): AgentMessage {
 	return { role: "user", content: [{ type: "text", text }], timestamp: 1 };
@@ -76,6 +85,45 @@ describe("compaction", () => {
 		expect(kept.length).toBeLessThan(messages.length);
 		expect(estimateTokens(kept)).toBeLessThan(estimateTokens(messages));
 		expect(summary).toContain("Compacted");
+	});
+
+	it("reports CompactionInfo through onCompaction", async () => {
+		const messages = Array.from({ length: 20 }, (_, i) => user(`msg-${i}-${"y".repeat(200)}`));
+		const infos: CompactionInfo[] = [];
+		await applyCompactionToSession(createSession("/t"), messages, {
+			keepRecentTokens: 200,
+			onCompaction: (info) => infos.push(info),
+		});
+		expect(infos).toHaveLength(1);
+		expect(infos[0]).toMatchObject({ reason: "threshold" });
+		expect(infos[0]?.dropped).toBeGreaterThan(0);
+		expect(infos[0]?.kept).toBeGreaterThan(0);
+		expect(infos[0]?.estBefore).toBeGreaterThan(infos[0]?.estAfter ?? 0);
+	});
+
+	it("reports reason 'length' on overflow compaction", async () => {
+		const assistant: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "cut" }],
+			api: "t",
+			provider: "t",
+			model: "t",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "length",
+			timestamp: 1,
+		};
+		const infos: CompactionInfo[] = [];
+		await applyCompactionToSession(createSession("/t"), [user("hi"), assistant], {
+			onCompaction: (info) => infos.push(info),
+		});
+		expect(infos[0]?.reason).toBe("length");
 	});
 
 	it("uses StreamFn for the dropped-message summary", async () => {

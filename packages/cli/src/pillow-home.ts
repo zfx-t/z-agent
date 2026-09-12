@@ -21,6 +21,11 @@ export function pillowProjectDir(cwd: string): string {
 	return join(cwd, PILLOW_DIR_NAME);
 }
 
+/** Diagnostics log root: `<userPillow>/logs/<YYYY-MM-DD>/<sessionId>.jsonl`. */
+export function pillowLogsDir(userPillow: string): string {
+	return join(userPillow, "logs");
+}
+
 export function legacyUserDir(home = homedir()): string {
 	return join(home, LEGACY_DIR_NAME);
 }

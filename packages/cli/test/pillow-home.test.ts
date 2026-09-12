@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensurePillowDir } from "../src/pillow-home.ts";
+import { ensurePillowDir, pillowLogsDir } from "../src/pillow-home.ts";
 
 describe("ensurePillowDir", () => {
 	it("copies legacy when target is missing", async () => {
@@ -28,5 +28,11 @@ describe("ensurePillowDir", () => {
 		await ensurePillowDir(target, legacy);
 		const { readFile } = await import("node:fs/promises");
 		expect(await readFile(join(target, "a.txt"), "utf-8")).toBe("pillow");
+	});
+});
+
+describe("pillowLogsDir", () => {
+	it("is <userPillow>/logs", () => {
+		expect(pillowLogsDir("/h/.pillow")).toBe("/h/.pillow/logs");
 	});
 });

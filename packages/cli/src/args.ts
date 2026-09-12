@@ -15,6 +15,7 @@ export interface CliArgs {
 	listSessions: boolean;
 	durable: boolean;
 	durableBackend: "jsonl" | "sqlite";
+	durableInterruptedTool: "fail" | "rerun";
 	cwd?: string;
 	model?: string;
 	api?: ProviderApi;
@@ -28,6 +29,8 @@ export interface CliArgs {
 	maxTokens?: number;
 	bashTimeout?: number;
 	bashEnv: "scrub" | "inherit";
+	noRetry: boolean;
+	debug: boolean;
 	error?: string;
 }
 
@@ -41,6 +44,7 @@ export function parseArgs(argv: string[]): CliArgs {
 	let listSessions = false;
 	let durable = false;
 	let durableBackend: "jsonl" | "sqlite" = "jsonl";
+	let durableInterruptedTool: "fail" | "rerun" = "fail";
 	let cwd: string | undefined;
 	let model: string | undefined;
 	let api: ProviderApi | undefined;
@@ -53,6 +57,8 @@ export function parseArgs(argv: string[]): CliArgs {
 	let maxTokens: number | undefined;
 	let bashTimeout: number | undefined;
 	let bashEnv: "scrub" | "inherit" = "scrub";
+	let noRetry = false;
+	let debug = false;
 	let error: string | undefined;
 	const promptParts: string[] = [];
 
@@ -93,6 +99,20 @@ export function parseArgs(argv: string[]): CliArgs {
 				break;
 			}
 			durableBackend = value;
+			i += 1;
+			continue;
+		}
+		if (arg === "--durable-interrupted-tool") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				error = `Missing value for ${arg}`;
+				break;
+			}
+			if (value !== "fail" && value !== "rerun") {
+				error = `Invalid value for ${arg}`;
+				break;
+			}
+			durableInterruptedTool = value;
 			i += 1;
 			continue;
 		}
@@ -142,6 +162,14 @@ export function parseArgs(argv: string[]): CliArgs {
 			}
 			bashEnv = value;
 			i += 1;
+			continue;
+		}
+		if (arg === "--no-retry") {
+			noRetry = true;
+			continue;
+		}
+		if (arg === "--debug") {
+			debug = true;
 			continue;
 		}
 		if (arg === "--list-models") {
@@ -216,6 +244,7 @@ export function parseArgs(argv: string[]): CliArgs {
 		listSessions,
 		durable,
 		durableBackend,
+		durableInterruptedTool,
 		cwd,
 		model,
 		api,
@@ -229,6 +258,8 @@ export function parseArgs(argv: string[]): CliArgs {
 		maxTokens,
 		bashTimeout,
 		bashEnv,
+		noRetry,
+		debug,
 		error,
 	};
 }
@@ -257,12 +288,15 @@ Flags:
   --extension <p>    Load an extension module
   --durable          Use L5 harness (op.state)
   --durable-backend <b>  op.state backend: jsonl (default) | sqlite
+  --durable-interrupted-tool <p>  Tool op interrupted mid-execute on resume: fail (default) | rerun
   --list-models      List configured model aliases
   --list-sessions    List sessions for --cwd
   --context-window <n>  Override context window tokens
   --max-tokens <n>      Override max output tokens
   --bash-timeout <n>    Bash default timeout seconds (1-3600, default 600)
   --bash-env <mode>     Bash child env: scrub (default) | inherit
+  --no-retry            Disable provider request retry
+  --debug               Write a JSONL diagnostics log under ~/.pillow/logs/<day>/<session>.jsonl
   -h, --help         Help
 
 Interactive commands:
@@ -277,6 +311,7 @@ Env:
   OPENAI_CONTEXT_WINDOW  Optional context window
   OPENAI_MAX_TOKENS      Optional max output tokens
   PILLOW_HOME       Override ~/.pillow
+  PILLOW_DEBUG      Diagnostics log without the flag: 1 (on) | verbose (adds size fields)
 
 Config:
   ~/.pillow/config.json   Model catalog (aliases, thinking, context)

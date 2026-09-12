@@ -141,40 +141,40 @@ export interface CompactionInfo { dropped: number; kept: number; estBefore: numb
 
 **Files:** Create `diagnostics.ts` (partial), `diagnostics.test.ts`; modify `pillow-home.ts`, `pillow-home.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `redact({ apiKey: "x", nested: { Authorization: "Bearer y" }, ok: 1 })` → both redacted, `ok` intact; a string value `"sk-abcdefghijklmnop"` → `"[redacted]"`; `logPathFor("/l", "s1", new Date("2026-09-12T10:00:00Z"))` → `/l/2026-09-12/s1.jsonl`; `rotateLogs` with an in-memory fs double: removes `2026-09-01` dir (>7 days), keeps `2026-09-10`, ignores `notes.txt` and `random-dir`, trims today's `*.jsonl` to 50 newest by name; `pillowLogsDir("/h/.pillow") === "/h/.pillow/logs"`.
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `redact({ apiKey: "x", nested: { Authorization: "Bearer y" }, ok: 1 })` → both redacted, `ok` intact; a string value `"sk-abcdefghijklmnop"` → `"[redacted]"`; `logPathFor("/l", "s1", new Date("2026-09-12T10:00:00Z"))` → `/l/2026-09-12/s1.jsonl`; `rotateLogs` with an in-memory fs double: removes `2026-09-01` dir (>7 days), keeps `2026-09-10`, ignores `notes.txt` and `random-dir`, trims today's `*.jsonl` to 50 newest by name; `pillowLogsDir("/h/.pillow") === "/h/.pillow/logs"`.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 2: Diagnostics sink and AgentEvent mapping
 
 **Files:** Modify `diagnostics.ts`, `diagnostics.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `mode: "off"` → `enabled === false`, `path === undefined`, `log()` and `flush()` never call `fs`; `mode: "on"` → first `log` triggers `mkdir` (0700) and `appendFile` of one JSON line + `chmod` 0600 once; `seq` increments; `flush()` resolves after pending appends; mapping: `message_start` for assistant → `provider.request` only once per turn (paired with `turn_start`), `message_end` for assistant → `provider.response` with `durationMs` from the matching request and `usage` copied; `tool_execution_start/end` → `tool.start/end` with `argKeys` and `outputChars`, never `args` values; `turn_end` → `loop.turn`; in `verbose` mode `provider.response.textChars` present, `text` absent; a synthetic event with `apiKey` in details is redacted.
-- [ ] **Step 2: Implement** — internal `queue: Promise<void>` chain for appends (`appendFile` serialised, errors swallowed after first `stderr` warning to avoid crash loops); per-turn timing map keyed by turn index.
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `mode: "off"` → `enabled === false`, `path === undefined`, `log()` and `flush()` never call `fs`; `mode: "on"` → first `log` triggers `mkdir` (0700) and `appendFile` of one JSON line + `chmod` 0600 once; `seq` increments; `flush()` resolves after pending appends; mapping: `message_start` for assistant → `provider.request` only once per turn (paired with `turn_start`), `message_end` for assistant → `provider.response` with `durationMs` from the matching request and `usage` copied; `tool_execution_start/end` → `tool.start/end` with `argKeys` and `outputChars`, never `args` values; `turn_end` → `loop.turn`; in `verbose` mode `provider.response.textChars` present, `text` absent; a synthetic event with `apiKey` in details is redacted.
+- [x] **Step 2: Implement** — internal `queue: Promise<void>` chain for appends (`appendFile` serialised, errors swallowed after first `stderr` warning to avoid crash loops); per-turn timing map keyed by turn index.
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 3: Crash guard
 
 **Files:** Create `crash-guard.ts`, `crash-guard.test.ts`; add `close()` idempotency test in `packages/tui/test/tui.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `handle("uncaughtException", new Error("boom"))` calls deps in order `restoreTerminal, persistSession, log, flush, stderr, exit(1)` (record with an array); `persistSession` that never resolves → `exit` still called after the 2 000 ms deadline (fake timers) and `log` fields include `sessionPersisted: false`; `restoreTerminal` throwing → still persists and exits; second `handle` while first is in flight → only `stderr` + `exit`, no second `persistSession`; `install(fakeProc)` registers `uncaughtException`, `unhandledRejection`, `SIGTERM`, `SIGHUP` and `uninstall` removes exactly those; `handle("SIGTERM")` exits 143, `("SIGHUP")` 129; non-Error rejection reason → message `String(reason)`; stderr line format matches decision 6 with and without `logPath`; `TuiSession.close()` twice writes `LEAVE_ALT` once.
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `handle("uncaughtException", new Error("boom"))` calls deps in order `restoreTerminal, persistSession, log, flush, stderr, exit(1)` (record with an array); `persistSession` that never resolves → `exit` still called after the 2 000 ms deadline (fake timers) and `log` fields include `sessionPersisted: false`; `restoreTerminal` throwing → still persists and exits; second `handle` while first is in flight → only `stderr` + `exit`, no second `persistSession`; `install(fakeProc)` registers `uncaughtException`, `unhandledRejection`, `SIGTERM`, `SIGHUP` and `uninstall` removes exactly those; `handle("SIGTERM")` exits 143, `("SIGHUP")` 129; non-Error rejection reason → message `String(reason)`; stderr line format matches decision 6 with and without `logPath`; `TuiSession.close()` twice writes `LEAVE_ALT` once.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 4: CLI wiring
 
 **Files:** Modify `args.ts`, `cli.ts`, `compaction.ts`, `model-settings.ts`; tests `args.test.ts`, `compaction.test.ts`, `model-settings.test.ts`, `smoke.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `parseArgs(["--debug"]).debug === true`; help lists it; `resolveDiagnosticsMode(false, { PILLOW_DEBUG: "verbose" }) === "verbose"`, flag `true` + env unset → `"on"`; `compact()` invokes `onCompaction` with the info object; `formatRuntimeStatus({ …, logPath })` prints `log: <path>`; smoke: `-p --yes --debug` against the scripted StreamFn used by existing smoke tests writes a file under a temp `HOME` containing `run.start`, `provider.request`, `provider.response`, `run.end` in order.
-- [ ] **Step 2: Implement** — in `cli.ts`: `const diag = createDiagnostics({ mode: resolveDiagnosticsMode(args.debug, process.env), logsDir: pillowLogsDir(userPillow), sessionId })`; `agent.subscribe(diag.onAgentEvent)`; Loop A hook: `onRetry: (e) => diag.log("provider.retry", e)`; `const guard = createCrashGuard({ restoreTerminal: () => tuiSession?.close(), persistSession: persist, log: (f) => diag.log("crash", f), flush: diag.flush, stderr: (l) => process.stderr.write(l + "\n"), exit: (c) => process.exit(c), logPath: diag.path })`; `guard.install(process)` before the run, `guard.uninstall()` after `persist()`; `main().catch((err) => guard.handle("main", err))`.
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `parseArgs(["--debug"]).debug === true`; help lists it; `resolveDiagnosticsMode(false, { PILLOW_DEBUG: "verbose" }) === "verbose"`, flag `true` + env unset → `"on"`; `compact()` invokes `onCompaction` with the info object; `formatRuntimeStatus({ …, logPath })` prints `log: <path>`; smoke: `-p --yes --debug` against the scripted StreamFn used by existing smoke tests writes a file under a temp `HOME` containing `run.start`, `provider.request`, `provider.response`, `run.end` in order.
+- [x] **Step 2: Implement** — in `cli.ts`: `const diag = createDiagnostics({ mode: resolveDiagnosticsMode(args.debug, process.env), logsDir: pillowLogsDir(userPillow), sessionId })`; `agent.subscribe(diag.onAgentEvent)`; Loop A hook: `onRetry: (e) => diag.log("provider.retry", e)`; `const guard = createCrashGuard({ restoreTerminal: () => tuiSession?.close(), persistSession: persist, log: (f) => diag.log("crash", f), flush: diag.flush, stderr: (l) => process.stderr.write(l + "\n"), exit: (c) => process.exit(c), logPath: diag.path })`; `guard.install(process)` before the run, `guard.uninstall()` after `persist()`; `main().catch((err) => guard.handle("main", err))`.
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 5: ADR, docs, evidence
 
-- [ ] `docs/adr/0031-diagnostics-crash-guard.md` — Alternatives: `debug` npm package (rejected: dependency, unstructured), logging inside `@z-agent/agent` (rejected: ADR-0010 boundaries; subscribe is sufficient), OpenTelemetry (rejected for v0: weight; record shape kept OTel-mappable), `process.on("exit")` only (rejected: cannot await persist).
-- [ ] Roadmap `Phase 3.4 — Diagnostics and crash guard`; glossary `diagnostics record`, `crash guard`, `redaction`.
-- [ ] `packages/cli/README.md`: `--debug`, log location, retention, redaction rules, how to attach a log to a bug report.
-- [ ] Evidence `docs/evidence/diagnostics-crash-acceptance.txt`: (1) `--debug -p --yes "list files"` → `head` of the log with values visibly redacted; (2) TUI with a throwaway extension whose command does `setTimeout(() => { throw new Error("boom") })` → terminal prompt is usable afterwards (`tput` sanity: `echo $?` prints 1, no stray escape state), the session file has the last turn, crash record present; (3) `kill -TERM <pid>` during a stream → exit 143 and `source: "SIGTERM"` record; (4) run without `--debug`: no `logs/` directory created (`ls ~/.pillow` before/after diff).
+- [x] `docs/adr/0031-diagnostics-crash-guard.md` — Alternatives: `debug` npm package (rejected: dependency, unstructured), logging inside `@z-agent/agent` (rejected: ADR-0010 boundaries; subscribe is sufficient), OpenTelemetry (rejected for v0: weight; record shape kept OTel-mappable), `process.on("exit")` only (rejected: cannot await persist).
+- [x] Roadmap `Phase 3.4 — Diagnostics and crash guard`; glossary `diagnostics record`, `crash guard`, `redaction`.
+- [x] `packages/cli/README.md`: `--debug`, log location, retention, redaction rules, how to attach a log to a bug report.
+- [x] Evidence `docs/evidence/diagnostics-crash-acceptance.txt`: (1) `--debug -p --yes "list files"` → `head` of the log with values visibly redacted; (2) TUI with a throwaway extension whose command does `setTimeout(() => { throw new Error("boom") })` → terminal prompt is usable afterwards (`tput` sanity: `echo $?` prints 1, no stray escape state), the session file has the last turn, crash record present; (3) `kill -TERM <pid>` during a stream → exit 143 and `source: "SIGTERM"` record; (4) run without `--debug`: no `logs/` directory created (`ls ~/.pillow` before/after diff).
 
 ## Execution Loop (per task)
 
