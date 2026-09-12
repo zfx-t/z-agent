@@ -14,7 +14,7 @@ export {
 	resolveAction,
 	TUI_ACTIONS,
 } from "./keymap.ts";
-export type { Key } from "./keys.ts";
+export type { Key, MouseEventInfo } from "./keys.ts";
 export { parseInputChunk, parseKey } from "./keys.ts";
 export type {
 	TuiEntryCache,
@@ -22,10 +22,12 @@ export type {
 	TuiFrameState,
 	TuiGlyphs,
 	TuiGlyphTheme,
+	TuiHitRegion,
+	TuiHitTarget,
 	TuiPickerState,
 	TuiScrollInfo,
 } from "./layout.ts";
-export { formatElapsed, renderFrame, renderFrameEx } from "./layout.ts";
+export { CONFIRM_ORDER, formatElapsed, renderFrame, renderFrameEx } from "./layout.ts";
 export type {
 	TuiCompletionCandidate,
 	TuiCompletionState,
@@ -41,6 +43,8 @@ export type {
 	TuiTranscriptEntry,
 } from "./model.ts";
 export { LineScreen } from "./screen.ts";
+export type { ScrollConfig, ScrollDirection, ScrollInputMode, ScrollUpdate } from "./scroll.ts";
+export { defaultScrollConfig, detectTerminalBrand, MouseScrollState, speedToMultiplier } from "./scroll.ts";
 export type { LabeledSegment } from "./segments.ts";
 export { fitLabeledSegments } from "./segments.ts";
 export type { InteractiveTuiOptions, PickListOptions } from "./session.ts";

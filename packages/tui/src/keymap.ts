@@ -55,6 +55,7 @@ export const DEFAULT_KEY_BINDINGS: Readonly<Record<TuiAction, string>> = {
 
 const VALID_CHORDS = new Set([
 	"enter",
+	"ctrl+enter",
 	"escape",
 	"tab",
 	"shift+tab",
@@ -105,6 +106,9 @@ export function chordFromKey(key: Key): string | undefined {
 	}
 	if (key.type === "shiftTab") {
 		return "shift+tab";
+	}
+	if (key.type === "ctrlEnter") {
+		return "ctrl+enter";
 	}
 	if (key.type === "newline") {
 		return "shift+enter";

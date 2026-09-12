@@ -22,6 +22,51 @@ export function clean(text: string): string {
 	return removeControls(text.replace(ANSI_PATTERN, "")).replace(/\t/g, "  ");
 }
 
+const ANSI_AT = new RegExp(`^${ESC}\\[[0-?]*[ -/]*[@-~]`);
+
+/**
+ * clean() plus offset maps. `toRaw` indexes cleaned chars to raw offsets;
+ * `fromRaw` maps a raw offset to the cleaned offset where its output landed —
+ * dropped chars collapse onto the boundary the next kept char occupies.
+ * Follows the same strip order as clean(): ANSI sequences, then controls,
+ * then tab expansion.
+ */
+export function cleanMapped(text: string): { text: string; toRaw: number[]; fromRaw: number[] } {
+	let out = "";
+	const toRaw: number[] = [];
+	const fromRaw: number[] = [];
+	let index = 0;
+	while (index < text.length) {
+		fromRaw[index] = out.length;
+		if (text[index] === ESC) {
+			const seq = ANSI_AT.exec(text.slice(index));
+			if (seq) {
+				for (let skip = 1; skip < seq[0].length; skip += 1) {
+					fromRaw[index + skip] = out.length;
+				}
+				index += seq[0].length;
+				continue;
+			}
+		}
+		const char = String.fromCodePoint(text.codePointAt(index) ?? 0);
+		const code = char.codePointAt(0) ?? 0;
+		const keep = code === 0x0a || code === 0x09 || (code >= 0x20 && code !== 0x7f);
+		if (keep) {
+			const emitted = char === "\t" ? "  " : char;
+			for (let part = 0; part < emitted.length; part += 1) {
+				toRaw.push(index);
+				out += emitted[part] ?? "";
+			}
+		}
+		for (let tail = 1; tail < char.length; tail += 1) {
+			fromRaw[index + tail] = out.length;
+		}
+		index += char.length;
+	}
+	fromRaw[text.length] = out.length;
+	return { text: out, toRaw, fromRaw };
+}
+
 function removeControls(text: string): string {
 	return Array.from(text)
 		.filter((char) => {
@@ -315,8 +360,6 @@ export function padTo(text: string, width: number): string {
 	const clipped = clip(text, width);
 	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
-
-const ANSI_AT = new RegExp(`^${ESC}\\[[0-?]*[ -/]*[@-~]`);
 
 /** Clip at a cell width while preserving ANSI sequences; appends an ellipsis on truncation. */
 export function clipAnsi(text: string, width: number, ellipsis = "…"): string {

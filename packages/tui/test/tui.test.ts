@@ -40,24 +40,47 @@ describe("keys + editor + confirm", () => {
 		expect(parseInputChunk("\x1b[")).toEqual({ keys: [], remainder: "\x1b[" });
 	});
 
-	it("parses SGR mouse wheel reports and swallows clicks", () => {
+	it("parses SGR mouse wheel reports and button events with coordinates", () => {
 		expect(parseInputChunk("\x1b[<64;80;10M")).toEqual({
-			keys: [{ type: "wheelUp" }],
+			keys: [{ type: "wheelUp", col: 79, row: 9 }],
 			remainder: "",
 		});
 		expect(parseInputChunk("\x1b[<65;1;1M")).toEqual({
-			keys: [{ type: "wheelDown" }],
+			keys: [{ type: "wheelDown", col: 0, row: 0 }],
 			remainder: "",
 		});
 		expect(parseInputChunk("\x1b[<68;1;1M")).toEqual({
-			keys: [{ type: "wheelUp" }],
+			keys: [{ type: "wheelUp", col: 0, row: 0 }],
 			remainder: "",
 		});
 		expect(parseInputChunk("\x1b[<0;5;5M\x1b[<0;5;5m")).toEqual({
-			keys: [{ type: "report" }, { type: "report" }],
+			keys: [
+				{
+					type: "mouse",
+					event: { kind: "down", button: "left", col: 4, row: 4, shift: false, alt: false, ctrl: false },
+				},
+				{
+					type: "mouse",
+					event: { kind: "up", button: "left", col: 4, row: 4, shift: false, alt: false, ctrl: false },
+				},
+			],
 			remainder: "",
 		});
 		expect(parseInputChunk("\x1b[<64")).toEqual({ keys: [], remainder: "\x1b[<64" });
+	});
+
+	it("parses selection and modified-enter keys", () => {
+		expect(parseKey("\x1b[1;2D")).toEqual({ type: "selectLeft" });
+		expect(parseKey("\x1b[1;2C")).toEqual({ type: "selectRight" });
+		expect(parseKey("\x1b[1;2A")).toEqual({ type: "selectUp" });
+		expect(parseKey("\x1b[1;2B")).toEqual({ type: "selectDown" });
+		expect(parseKey("\x1b[1;6D")).toEqual({ type: "selectWordLeft" });
+		expect(parseKey("\x1b[1;4C")).toEqual({ type: "selectWordRight" });
+		expect(parseKey("\x1b[1;2H")).toEqual({ type: "selectHome" });
+		expect(parseKey("\x1b[1;2F")).toEqual({ type: "selectEnd" });
+		expect(parseKey("\x1b[13;5u")).toEqual({ type: "ctrlEnter" });
+		expect(parseKey("\x1b[13;4u")).toEqual({ type: "newline" });
+		expect(parseInputChunk("\x1b[1;2")).toEqual({ keys: [], remainder: "\x1b[1;2" });
 	});
 
 	it("edits around the cursor and submits", () => {
@@ -115,6 +138,76 @@ describe("keys + editor + confirm", () => {
 		expect(editor.displayLines().join("\n")).toContain("[Image - 1586 x 992]");
 		expect(editor.displayLines().join("\n")).not.toContain("private paste");
 		expect(editor.submit()).toBe("Describe a long private paste");
+	});
+
+	it("extends a selection and replaces it on type", () => {
+		const editor = new EditorBuffer();
+		editor.set("hello world");
+		editor.extendLeft();
+		editor.extendLeft();
+		editor.extendLeft();
+		editor.extendLeft();
+		editor.extendLeft();
+		expect(editor.selectionRange).toEqual({ start: 6, end: 11 });
+		expect(editor.displaySelection()).toEqual([{ row: 0, start: 6, end: 11 }]);
+		editor.insert("there");
+		expect(editor.value).toBe("hello there");
+		expect(editor.selectionRange).toBeUndefined();
+		expect(editor.cursorOffset).toBe(11);
+	});
+
+	it("extends selection by word, line bounds, and rows; backspace deletes it", () => {
+		const editor = new EditorBuffer();
+		editor.set("alpha beta\ngamma delta");
+		editor.moveEnd();
+		editor.extendWordLeft();
+		expect(editor.selectionRange).toEqual({ start: 17, end: 22 });
+		editor.moveRight();
+		expect(editor.selectionRange).toBeUndefined();
+		editor.extendHome();
+		expect(editor.selectionRange).toEqual({ start: 11, end: 22 });
+		editor.extendUp();
+		expect(editor.selectionRange).toEqual({ start: 0, end: 22 });
+		editor.backspace();
+		expect(editor.value).toBe("");
+		editor.set("ab\ncd");
+		editor.moveHome();
+		editor.moveUp();
+		editor.extendEnd();
+		expect(editor.selectionRange).toEqual({ start: 0, end: 2 });
+		editor.delete();
+		expect(editor.value).toBe("\ncd");
+	});
+
+	it("maps a display cell back to the source offset", () => {
+		const editor = new EditorBuffer();
+		editor.set("ab\ncde");
+		editor.setCursorFromDisplay(1, 2);
+		expect(editor.cursorOffset).toBe(5);
+		editor.setCursorFromDisplay(0, 0);
+		expect(editor.cursorOffset).toBe(0);
+		editor.setCursorFromDisplay(1, 2, true);
+		expect(editor.selectionRange).toEqual({ start: 0, end: 5 });
+	});
+
+	it("maps display cells across cleaned-out tabs and control bytes", () => {
+		const editor = new EditorBuffer();
+		editor.set("a\tb"); // displays as "a  b"
+		expect(editor.displayLines()).toEqual(["a  b"]);
+		editor.setCursorFromDisplay(0, 3); // click on 'b'
+		expect(editor.cursorOffset).toBe(2);
+		editor.set("\x07end"); // control byte is dropped from display
+		expect(editor.displayLines()).toEqual(["end"]);
+		editor.setCursorFromDisplay(0, 2); // click on 'd'
+		expect(editor.cursorOffset).toBe(3);
+	});
+
+	it("extends a selection through a placeholder chip's end", () => {
+		const editor = new EditorBuffer();
+		editor.insertPastedText("secret bytes", "[P]");
+		editor.moveHome();
+		editor.extendEnd();
+		expect(editor.displaySelection()).toEqual([{ row: 0, start: 0, end: 3 }]);
 	});
 
 	it("maps confirm keys", () => {
@@ -410,7 +503,7 @@ describe("renderFrame", () => {
 				streaming: true,
 				colors: false,
 				focus: "transcript",
-				selectedToolCallId: "call-1",
+				selectedEntryId: "first",
 				followLatest: false,
 				unseenEventCount: 2,
 			},
@@ -1061,7 +1154,7 @@ describe("InteractiveTui", () => {
 		tui.close();
 	});
 
-	it("scrolls the transcript with the mouse wheel in editor focus", () => {
+	it("scrolls the transcript with the mouse wheel in editor focus", async () => {
 		const writes: string[] = [];
 		const stdout = {
 			write: (chunk: string) => {
@@ -1076,17 +1169,22 @@ describe("InteractiveTui", () => {
 		for (let index = 0; index < 40; index += 1) {
 			tui.appendLine(`old message ${index}`);
 		}
-		const lastFrame = () => stripAnsi(writes[writes.length - 1] ?? "");
-		expect(lastFrame()).toContain("old message 39");
-		expect(lastFrame()).not.toContain("old message 0");
+		const frame = () => screenText(writes);
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+		expect(frame()).toContain("old message 39");
+		expect(frame()).not.toContain("old message 0");
 
+		// Wheel events normalize into a scroll stream; residual lines flush on
+		// the redraw cadence after the 80ms stream gap.
 		tui.pushKey({ type: "wheelUp" });
 		tui.pushKey({ type: "wheelUp" });
-		expect(lastFrame()).not.toContain("old message 39");
+		await settle();
+		expect(frame()).not.toContain("old message 39");
 
 		tui.pushKey({ type: "wheelDown" });
 		tui.pushKey({ type: "wheelDown" });
-		expect(lastFrame()).toContain("old message 39");
+		await settle();
+		expect(frame()).toContain("old message 39");
 		tui.close();
 	});
 
@@ -1202,7 +1300,395 @@ describe("InteractiveTui", () => {
 		expect((frame.match(/# Hello/g) ?? []).length).toBe(1);
 		tui.close();
 	});
+
+	it("forwards typed characters from transcript focus into the editor", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		tui.appendLine("some output");
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "tab" }); // focus transcript
+		tui.pushKey({ type: "char", value: "h" });
+		tui.pushKey({ type: "char", value: "i" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("hi");
+		expect(screenText(writes)).toContain("enter send");
+		tui.close();
+	});
+
+	it("PageUp scrolls the transcript without stealing editor focus", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		for (let index = 0; index < 40; index += 1) {
+			tui.appendLine(`line ${index}`);
+		}
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "draft" });
+		tui.pushKey({ type: "pageUp" });
+		expect(screenText(writes)).not.toContain("line 39");
+		// Focus stayed in the editor: typing continues the draft.
+		tui.pushKey({ type: "char", value: "!" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("draft!");
+		tui.close();
+	});
+
+	it("selects a transcript entry on click and toggles the inspector on second click", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		tui.appendToolStart("call-1", "read", { path: "a.ts" });
+		tui.appendToolEnd("call-1", "file contents", false);
+		const click = (col: number, row: number) => {
+			tui.pushKey({
+				type: "mouse",
+				event: { kind: "down", button: "left", col, row, shift: false, alt: false, ctrl: false },
+			});
+			tui.pushKey({
+				type: "mouse",
+				event: { kind: "up", button: "left", col, row, shift: false, alt: false, ctrl: false },
+			});
+		};
+		const toolRow = screenText(writes)
+			.split("\n")
+			.findIndex((line) => line.includes("read"));
+		expect(toolRow).toBeGreaterThanOrEqual(2);
+		click(5, toolRow);
+		expect(screenText(writes).split("\n")[toolRow]).toContain(">");
+		click(5, toolRow);
+		expect(screenText(writes)).toContain("SUMMARY");
+		tui.close();
+	});
+
+	it("positions the editor cursor on click", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "hello" });
+		// First editor content row: top border + first wrapped row, content starts
+		// after the gutter (pipe, space, prompt, space).
+		const editorRow = screenText(writes)
+			.split("\n")
+			.findIndex((line) => line.includes("hello"));
+		expect(editorRow).toBeGreaterThanOrEqual(0);
+		const col = (screenText(writes).split("\n")[editorRow] ?? "").indexOf("hello");
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "down", button: "left", col, row: editorRow, shift: false, alt: false, ctrl: false },
+		});
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "up", button: "left", col, row: editorRow, shift: false, alt: false, ctrl: false },
+		});
+		tui.pushKey({ type: "char", value: ">" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe(">hello");
+		tui.close();
+	});
+
+	it("Esc Esc clears a draft into the stash and ctrl+s restores it", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		void tui.readPrompt();
+		tui.pushKey({ type: "char", value: "half typed" });
+		tui.pushKey({ type: "escape" });
+		tui.pushKey({ type: "escape" });
+		// Draft gone: submitting now resolves nothing.
+		tui.pushKey({ type: "ctrl", value: "s" });
+		const restored = tui.readPrompt();
+		tui.pushKey({ type: "enter" });
+		await expect(restored).resolves.toBe("half typed");
+		tui.close();
+	});
+
+	it("Esc Esc on an empty draft resolves the sessions picker", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const first = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "hi" });
+		tui.pushKey({ type: "enter" });
+		await expect(first).resolves.toBe("hi");
+		const second = tui.readPrompt();
+		tui.pushKey({ type: "escape" });
+		tui.pushKey({ type: "escape" });
+		await expect(second).resolves.toBe("/sessions");
+		tui.close();
+	});
+
+	it("moves the confirm choice focus with arrows and activates on enter", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout });
+		const confirm = tui.confirmTool("bash", { command: "ls" });
+		tui.pushKey({ type: "right" });
+		tui.pushKey({ type: "right" });
+		tui.pushKey({ type: "enter" });
+		await expect(confirm).resolves.toBe("deny");
+
+		const again = tui.confirmTool("bash", { command: "ls" });
+		tui.pushKey({ type: "char", value: "2" });
+		await expect(again).resolves.toBe("always");
+		tui.close();
+	});
+
+	it("clicks a confirm choice", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const confirm = tui.confirmTool("bash", { command: "rm -rf /tmp/x" });
+		const rows = screenText(writes).split("\n");
+		const choiceRow = rows.findIndex((line) => line.includes("[a] always"));
+		expect(choiceRow).toBeGreaterThanOrEqual(0);
+		const col = (rows[choiceRow] ?? "").indexOf("[a] always") + 1;
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "down", button: "left", col, row: choiceRow, shift: false, alt: false, ctrl: false },
+		});
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "up", button: "left", col, row: choiceRow, shift: false, alt: false, ctrl: false },
+		});
+		await expect(confirm).resolves.toBe("always");
+		tui.close();
+	});
+
+	it("wraps the picker with tab and clicks a row to choose", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const wrap = tui.pickFromList("Levels", ["off", "low", "high"], { initialIndex: 2 });
+		tui.pushKey({ type: "tab" }); // wraps 2 → 0
+		tui.pushKey({ type: "enter" });
+		await expect(wrap).resolves.toBe(0);
+
+		const click = tui.pickFromList("Levels", ["off", "low", "high"]);
+		const rows = screenText(writes).split("\n");
+		const row = rows.findIndex((line) => line.includes("high"));
+		expect(row).toBeGreaterThanOrEqual(0);
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "down", button: "left", col: 4, row, shift: false, alt: false, ctrl: false },
+		});
+		tui.pushKey({
+			type: "mouse",
+			event: { kind: "up", button: "left", col: 4, row, shift: false, alt: false, ctrl: false },
+		});
+		await expect(click).resolves.toBe(2);
+		tui.close();
+	});
+
+	it("jumps between user turns with shift+left/right in transcript focus", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		for (let turn = 0; turn < 3; turn += 1) {
+			tui.appendUser(`question ${turn}`, false);
+			tui.appendLine(`answer ${turn}`);
+		}
+		tui.pushKey({ type: "tab" }); // focus transcript; selection lands on last entry
+		tui.pushKey({ type: "selectLeft" });
+		const frame = screenText(writes);
+		const selected = frame.split("\n").findIndex((line) => line.trimStart().startsWith(">"));
+		expect(selected).toBeGreaterThanOrEqual(0);
+		expect(frame.split("\n")[selected]).toContain("question 2");
+		tui.pushKey({ type: "selectLeft" });
+		expect(
+			screenText(writes)
+				.split("\n")
+				.find((line) => line.trimStart().startsWith(">")),
+		).toContain("question 1");
+		tui.pushKey({ type: "selectRight" });
+		expect(
+			screenText(writes)
+				.split("\n")
+				.find((line) => line.trimStart().startsWith(">")),
+		).toContain("question 2");
+		tui.close();
+	});
+
+	it("retires the double-Esc clear gesture when another key intervenes", async () => {
+		const stdout = {
+			write: () => true,
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "draft" });
+		tui.pushKey({ type: "escape" });
+		// An intervening keypress retires the armed gesture: the next Esc is a
+		// fresh arm, not the second half of a double-Esc.
+		tui.pushKey({ type: "char", value: "!" });
+		tui.pushKey({ type: "escape" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("draft!");
+		tui.close();
+	});
+
+	it("keeps the transcript viewport put when clicking an entry", () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		for (let index = 0; index < 40; index += 1) {
+			if (index === 25) {
+				tui.appendToolStart("call-1", "read", { path: "a.ts" });
+				tui.appendToolEnd("call-1", "file contents", false);
+			} else {
+				tui.appendLine(`line ${index}`);
+			}
+		}
+		const click = (col: number, row: number) => {
+			tui.pushKey({
+				type: "mouse",
+				event: { kind: "down", button: "left", col, row, shift: false, alt: false, ctrl: false },
+			});
+			tui.pushKey({
+				type: "mouse",
+				event: { kind: "up", button: "left", col, row, shift: false, alt: false, ctrl: false },
+			});
+		};
+		const rows = () => screenText(writes).split("\n");
+		const toolRow = rows().findIndex((line) => line.includes("read"));
+		expect(toolRow).toBeGreaterThanOrEqual(2);
+		click(10, toolRow);
+		// Selecting must not recenter: the clicked row stays under the pointer.
+		expect(rows()[toolRow]).toContain("read");
+		expect(rows()[toolRow]).toContain(">");
+		click(10, toolRow);
+		expect(screenText(writes)).toContain("SUMMARY");
+		tui.close();
+	});
+
+	it("lands the caret at row end when clicking past an editor line", async () => {
+		const writes: string[] = [];
+		const stdout = {
+			write: (chunk: string) => {
+				writes.push(chunk);
+				return true;
+			},
+			columns: 80,
+			rows: 24,
+		} as unknown as NodeJS.WriteStream;
+		const stdin = { isTTY: false, on() {}, off() {}, setRawMode() {} } as unknown as NodeJS.ReadStream;
+		const tui = new InteractiveTui({ stdin, stdout, colors: false });
+		const prompt = tui.readPrompt();
+		tui.pushKey({ type: "char", value: "ab" });
+		const editorRow = screenText(writes)
+			.split("\n")
+			.findIndex((line) => line.includes("ab"));
+		expect(editorRow).toBeGreaterThanOrEqual(0);
+		for (const kind of ["down", "up"] as const) {
+			tui.pushKey({
+				type: "mouse",
+				event: { kind, button: "left", col: 30, row: editorRow, shift: false, alt: false, ctrl: false },
+			});
+		}
+		tui.pushKey({ type: "char", value: "!" });
+		tui.pushKey({ type: "enter" });
+		await expect(prompt).resolves.toBe("ab!");
+		tui.close();
+	});
 });
+
+const ESC = "\u001b";
+const ROW_WRITE = new RegExp(`^${ESC}\\[(\\d+);1H${ESC}\\[2K`);
+const ROW_BOUNDARY = new RegExp(`(?=${ESC}\\[\\d+;1H)`, "u");
+
+/** Replay LineScreen's diffed row writes into a reconstructed terminal frame. */
+function screenText(writes: string[], rows = 40): string {
+	const screen = new Map<number, string>();
+	for (const chunk of writes) {
+		for (const part of chunk.split(ROW_BOUNDARY)) {
+			const match = ROW_WRITE.exec(part);
+			if (match === null) {
+				continue;
+			}
+			screen.set(Number(match[1]) - 1, stripAnsi(part.slice(match[0].length)));
+		}
+	}
+	return Array.from({ length: rows }, (_, row) => screen.get(row) ?? "").join("\n");
+}
 
 function stripAnsi(text: string): string {
 	let output = "";

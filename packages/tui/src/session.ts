@@ -4,9 +4,9 @@ import { confirmChoiceFromKey } from "./confirm.ts";
 import { EditorBuffer } from "./editor.ts";
 import type { TuiAction } from "./keymap.ts";
 import { type ParsedKeymap, parseKeymapConfig, resolveAction } from "./keymap.ts";
-import { type Key, parseInputChunk } from "./keys.ts";
-import type { TuiEntryCache, TuiFrameState } from "./layout.ts";
-import { renderFrameEx, transcriptViewportFor } from "./layout.ts";
+import { type Key, type MouseEventInfo, parseInputChunk } from "./keys.ts";
+import type { TuiEntryCache, TuiFrameState, TuiHitRegion } from "./layout.ts";
+import { CONFIRM_ORDER, renderFrameEx, transcriptViewportFor } from "./layout.ts";
 import type {
 	TuiCompletionCandidate,
 	TuiCompletionState,
@@ -20,6 +20,7 @@ import type {
 	TuiTranscriptEntry,
 } from "./model.ts";
 import { LineScreen } from "./screen.ts";
+import { defaultScrollConfig, MouseScrollState, type ScrollDirection } from "./scroll.ts";
 import { reportAmbiguousWide } from "./text.ts";
 import { availableInspectorViews, detailLines } from "./tool-detail.ts";
 
@@ -62,7 +63,8 @@ export interface PickListOptions {
 }
 
 const MAX_PROMPT_HISTORY = 100;
-const WHEEL_SCROLL_ROWS = 3;
+/** Double-Esc arming window (Grok: ESC_DOUBLE_PRESS_TTL). */
+const ESC_DOUBLE_PRESS_MS = 800;
 
 /**
  * Full-screen coding TUI: transcript, streaming deltas, editor, confirm modal.
@@ -87,7 +89,7 @@ export class InteractiveTui {
 	private readonly colors: boolean;
 	private streaming = false;
 	private focus: TuiFocus = "editor";
-	private selectedToolCallId: string | undefined;
+	private selectedEntryId: string | undefined;
 	private expandedToolCallId: string | undefined;
 	private inspectorView: TuiInspectorView = "summary";
 	private inspectorScrollOffset = 0;
@@ -95,7 +97,24 @@ export class InteractiveTui {
 	private unseenEventCount = 0;
 	/** First visible transcript row while scrolled back; undefined = follow latest. */
 	private transcriptScrollOffset: number | undefined;
+	/** Hit regions from the last painted frame; mouse presses resolve against these. */
+	private lastHits: TuiHitRegion[] = [];
+	/** Transcript viewport height of the last painted frame (wheel scroll basis). */
+	private lastBodyHeight = 0;
+	/** Cell of the last left-button press; a release on the same cell is a click. */
+	private mouseDownCell: { col: number; row: number } | undefined;
+	private readonly scrollState = new MouseScrollState();
+	private scrollTimer: NodeJS.Timeout | undefined;
+	/** Zone the active wheel gesture scrolls (recomputed per event from the pointer cell). */
+	private scrollZone: "picker" | "inspector" | "transcript" = "transcript";
 	private confirm: { request: ConfirmRequest; resolve: (choice: ConfirmChoice) => void } | undefined;
+	private confirmFocused: ConfirmChoice = "once";
+	/** Armed double-Esc gesture: "clear" wipes the draft to stash, "rewind" opens /sessions. */
+	private escArm: { kind: "clear" | "rewind"; timer: NodeJS.Timeout } | undefined;
+	/** Draft parked by Ctrl+S or Esc Esc. `discard` = user meant it gone (never auto-restores). */
+	private draftStash: { text: string; discard: boolean } | undefined;
+	/** One-shot hint shown in place of the key hints until the next keypress. */
+	private transientHint: string | undefined;
 	private picker:
 		| {
 				title: string;
@@ -237,6 +256,11 @@ export class InteractiveTui {
 			this.probeTimer = undefined;
 		}
 		this.probePending = false;
+		if (this.scrollTimer) {
+			clearTimeout(this.scrollTimer);
+			this.scrollTimer = undefined;
+		}
+		this.disarmEsc();
 		this.stdin.off("data", this.onData);
 		if (this.stdout.isTTY) {
 			this.stdout.off("resize", this.onResize);
@@ -292,6 +316,8 @@ export class InteractiveTui {
 	clearTranscript(): void {
 		this.transcript.length = 0;
 		this.transcriptScrollOffset = undefined;
+		this.selectedEntryId = undefined;
+		this.expandedToolCallId = undefined;
 		this.followingLatest = true;
 		this.unseenEventCount = 0;
 		this.repaint();
@@ -383,6 +409,7 @@ export class InteractiveTui {
 	confirmTool(toolName: string, args: unknown): Promise<ConfirmChoice> {
 		return new Promise((resolve) => {
 			this.cancelCompletion();
+			this.confirmFocused = "once";
 			this.confirm = { request: { toolName, args }, resolve };
 			this.repaint();
 		});
@@ -475,22 +502,34 @@ export class InteractiveTui {
 		if (this.closed) {
 			return;
 		}
+		if (key.type === "report") {
+			return;
+		}
+		// Any non-Esc input — keypress, click, or wheel — retires an armed
+		// double-Esc gesture and its hint.
+		if (key.type !== "escape") {
+			this.transientHint = undefined;
+			this.disarmEsc();
+		}
+		if (key.type === "mouse") {
+			this.dispatchMouse(key.event);
+			return;
+		}
 		if (key.type === "wheelUp" || key.type === "wheelDown") {
-			const direction = key.type === "wheelDown" ? 1 : -1;
-			if (this.picker) {
-				this.picker.index = Math.max(0, Math.min(this.picker.matches.length - 1, this.picker.index + direction));
-			} else {
-				this.scrollTranscript(direction * WHEEL_SCROLL_ROWS);
-			}
-			this.repaint();
+			this.handleWheel(key);
 			return;
 		}
 		if (this.picker) {
-			if (key.type === "up") {
-				this.picker.index = Math.max(0, this.picker.index - 1);
-			} else if (key.type === "down") {
-				this.picker.index = Math.min(this.picker.matches.length - 1, this.picker.index + 1);
-			} else if (key.type === "enter") {
+			if (key.type === "up" || key.type === "shiftTab") {
+				this.picker.index =
+					(this.picker.index - 1 + this.picker.matches.length) % Math.max(1, this.picker.matches.length);
+			} else if (key.type === "down" || key.type === "tab") {
+				this.picker.index = (this.picker.index + 1) % Math.max(1, this.picker.matches.length);
+			} else if (key.type === "pageUp") {
+				this.picker.index = Math.max(0, this.picker.index - 5);
+			} else if (key.type === "pageDown") {
+				this.picker.index = Math.min(this.picker.matches.length - 1, this.picker.index + 5);
+			} else if (key.type === "enter" || key.type === "ctrlEnter") {
 				this.finishPickerMatch();
 				return;
 			} else if (key.type === "escape" || (key.type === "ctrl" && key.value === "c")) {
@@ -538,16 +577,46 @@ export class InteractiveTui {
 			return;
 		}
 		if (this.confirm) {
+			if (
+				key.type === "left" ||
+				key.type === "up" ||
+				key.type === "shiftTab" ||
+				(key.type === "ctrl" && key.value === "p")
+			) {
+				this.moveConfirmFocus(-1);
+				this.repaint();
+				return;
+			}
+			if (
+				key.type === "right" ||
+				key.type === "down" ||
+				key.type === "tab" ||
+				(key.type === "ctrl" && key.value === "n")
+			) {
+				this.moveConfirmFocus(1);
+				this.repaint();
+				return;
+			}
+			if (key.type === "char" && /^[1-3]$/u.test(key.value)) {
+				this.resolveConfirm(CONFIRM_ORDER[Number(key.value) - 1] ?? "deny");
+				return;
+			}
+			if (key.type === "enter" || key.type === "ctrlEnter") {
+				this.resolveConfirm(this.confirmFocused);
+				return;
+			}
 			const choice = confirmChoiceFromKey(key);
 			if (choice) {
-				const resolve = this.confirm.resolve;
-				this.confirm = undefined;
-				resolve(choice);
-				this.repaint();
+				this.resolveConfirm(choice);
+				return;
 			}
+			this.repaint();
 			return;
 		}
-		if (action === "completion.accept" || action === "completion.next" || action === "completion.prev") {
+		if (
+			this.focus === "editor" &&
+			(action === "completion.accept" || action === "completion.next" || action === "completion.prev")
+		) {
 			this.dispatchCompletionKey(action === "completion.prev" ? { type: "shiftTab" } : { type: "tab" });
 			this.repaint();
 			return;
@@ -561,6 +630,10 @@ export class InteractiveTui {
 			this.repaint();
 			return;
 		}
+		if (key.type === "escape" && this.focus === "editor") {
+			this.handleEditorEscape();
+			return;
+		}
 		if (action === "focus.editor") {
 			this.cancelCompletion();
 			this.focus = "editor";
@@ -571,9 +644,9 @@ export class InteractiveTui {
 			void this.openPalette();
 			return;
 		}
+		// PageUp/PageDown scroll the transcript without stealing editor focus
+		// (Grok: prompt stays focused, the draft is untouched).
 		if (this.focus === "editor" && (key.type === "pageUp" || key.type === "pageDown")) {
-			this.focus = "transcript";
-			this.selectedToolCallId = undefined;
 			this.scrollTranscript(key.type === "pageUp" ? -this.scrollPage() : this.scrollPage());
 			this.repaint();
 			return;
@@ -590,6 +663,11 @@ export class InteractiveTui {
 			key = { type: "newline" };
 		} else if (action === "submit") {
 			key = { type: "enter" };
+		}
+		if (key.type === "ctrl" && key.value === "s") {
+			this.toggleDraftStash();
+			this.repaint();
+			return;
 		}
 		let refreshCompletion = false;
 		if (key.type === "paste") {
@@ -614,6 +692,22 @@ export class InteractiveTui {
 		} else if (key.type === "right") {
 			this.editor.moveRight();
 			refreshCompletion = true;
+		} else if (key.type === "selectLeft") {
+			this.editor.extendLeft();
+		} else if (key.type === "selectRight") {
+			this.editor.extendRight();
+		} else if (key.type === "selectUp") {
+			this.editor.extendUp();
+		} else if (key.type === "selectDown") {
+			this.editor.extendDown();
+		} else if (key.type === "selectWordLeft") {
+			this.editor.extendWordLeft();
+		} else if (key.type === "selectWordRight") {
+			this.editor.extendWordRight();
+		} else if (key.type === "selectHome") {
+			this.editor.extendHome();
+		} else if (key.type === "selectEnd") {
+			this.editor.extendEnd();
 		} else if (key.type === "wordLeft") {
 			this.editor.moveWordLeft();
 			refreshCompletion = true;
@@ -664,7 +758,7 @@ export class InteractiveTui {
 			this.resetHistoryNavigation();
 			this.editor.deleteWordBackward();
 			refreshCompletion = true;
-		} else if (key.type === "enter") {
+		} else if (key.type === "enter" || key.type === "ctrlEnter") {
 			if (this.streaming && !this.onSubmitDuringRun) {
 				this.repaint();
 				return;
@@ -678,6 +772,12 @@ export class InteractiveTui {
 			this.rememberPrompt(value);
 			this.appendUser(value);
 			this.followTranscriptLatest();
+			// A Ctrl+S-stashed draft returns after the next send; a draft cleared
+			// via Esc Esc (discard gesture) stays parked until Ctrl+S restores it.
+			if (this.draftStash && !this.draftStash.discard) {
+				this.editor.set(this.draftStash.text);
+				this.draftStash = undefined;
+			}
 			if (this.streaming) {
 				this.onSubmitDuringRun?.(value);
 			} else {
@@ -756,7 +856,7 @@ export class InteractiveTui {
 			return;
 		}
 		this.focus = "transcript";
-		this.selectedToolCallId = this.toolEntries().at(-1)?.tool?.toolCallId;
+		this.selectedEntryId = this.transcript.at(-1)?.id;
 		this.transcriptScrollOffset = undefined;
 		this.followingLatest = true;
 		this.unseenEventCount = 0;
@@ -796,12 +896,12 @@ export class InteractiveTui {
 			return;
 		}
 		if (action === "inspector.next") {
-			this.moveToolSelection(1);
+			this.moveEntrySelection(1);
 			this.repaint();
 			return;
 		}
 		if (action === "inspector.prev") {
-			this.moveToolSelection(-1);
+			this.moveEntrySelection(-1);
 			this.repaint();
 			return;
 		}
@@ -819,33 +919,53 @@ export class InteractiveTui {
 	}
 
 	private dispatchTranscriptKey(key: Key): void {
-		if (key.type === "escape" || key.type === "tab") {
+		if (key.type === "escape" || key.type === "tab" || key.type === "shiftTab") {
 			this.focus = "editor";
 			this.repaint();
 			return;
 		}
+		// Grok simple mode: typing while the transcript is focused jumps back to
+		// the prompt and delivers the keystroke there. `?` opens the palette.
+		if (key.type === "char" || key.type === "paste") {
+			if (key.type === "char" && key.value === "?" && this.editor.value.length === 0) {
+				void this.openPalette();
+				this.repaint();
+				return;
+			}
+			this.focus = "editor";
+			this.dispatch(key);
+			return;
+		}
 		if (key.type === "up") {
-			if (this.toolEntries().length > 0) {
-				this.moveToolSelection(-1);
+			if (this.transcript.length > 0) {
+				this.moveEntrySelection(-1);
 			} else {
 				this.scrollTranscript(-1);
 			}
 		} else if (key.type === "down") {
-			if (this.toolEntries().length > 0) {
-				this.moveToolSelection(1);
+			if (this.transcript.length > 0) {
+				this.moveEntrySelection(1);
 			} else {
 				this.scrollTranscript(1);
 			}
-		} else if (key.type === "enter") {
+		} else if (key.type === "enter" || key.type === "ctrlEnter") {
 			this.toggleInspector();
 		} else if (key.type === "left") {
 			this.moveInspectorView(-1);
 		} else if (key.type === "right") {
 			this.moveInspectorView(1);
-		} else if (key.type === "char" && key.value === "g") {
-			this.scrollTranscriptToTop();
-		} else if (key.type === "char" && key.value === "G") {
-			this.followTranscriptLatest();
+		} else if (key.type === "selectLeft") {
+			this.moveTurnSelection(-1);
+		} else if (key.type === "selectRight") {
+			this.moveTurnSelection(1);
+		} else if (key.type === "selectUp") {
+			this.scrollTranscript(-1);
+		} else if (key.type === "selectDown") {
+			this.scrollTranscript(1);
+		} else if (key.type === "ctrl" && key.value === "u") {
+			this.scrollTranscript(-Math.max(1, Math.floor(this.scrollPage() / 2)));
+		} else if (key.type === "ctrl" && key.value === "d") {
+			this.scrollTranscript(Math.max(1, Math.floor(this.scrollPage() / 2)));
 		} else if (key.type === "pageUp") {
 			if (this.activeInspector()) {
 				this.moveInspectorScroll(-6);
@@ -874,26 +994,71 @@ export class InteractiveTui {
 		this.repaint();
 	}
 
-	private toolEntries(): TuiTranscriptEntry[] {
-		return this.transcript.filter(
-			(entry): entry is TuiTranscriptEntry => entry.kind === "tool" && entry.tool !== undefined,
-		);
-	}
-
-	private moveToolSelection(direction: -1 | 1): void {
-		const entries = this.toolEntries();
-		if (entries.length === 0) {
+	private moveEntrySelection(direction: -1 | 1): void {
+		if (this.transcript.length === 0) {
 			return;
 		}
-		const current = entries.findIndex((entry) => entry.tool?.toolCallId === this.selectedToolCallId);
-		const next = current < 0 ? entries.length - 1 : Math.max(0, Math.min(entries.length - 1, current + direction));
-		this.selectedToolCallId = entries[next]?.tool?.toolCallId;
+		const current = this.transcript.findIndex((entry) => entry.id === this.selectedEntryId);
+		const next =
+			current < 0
+				? direction < 0
+					? this.transcript.length - 1
+					: 0
+				: Math.max(0, Math.min(this.transcript.length - 1, current + direction));
+		this.selectedEntryId = this.transcript[next]?.id;
 		this.transcriptScrollOffset = undefined;
-		const isLatest = next === entries.length - 1;
+		const isLatest = next === this.transcript.length - 1;
 		this.followingLatest = isLatest;
 		if (isLatest) {
 			this.unseenEventCount = 0;
 		}
+	}
+
+	/** Shift+←/→ jump to the previous/next user turn (Grok turn navigation). */
+	private moveTurnSelection(direction: -1 | 1): void {
+		const current = this.transcript.findIndex((entry) => entry.id === this.selectedEntryId);
+		let index = current;
+		while (true) {
+			index += direction;
+			if (index < 0 || index >= this.transcript.length) {
+				// With no selection, land on the nearest turn in that direction.
+				if (current >= 0) {
+					return;
+				}
+				const fallback = direction < 0 ? this.lastTurnIndex() : this.firstTurnIndex();
+				if (fallback === undefined) {
+					return;
+				}
+				index = fallback;
+			}
+			if (this.transcript[index]?.kind === "user") {
+				this.selectedEntryId = this.transcript[index]?.id;
+				this.transcriptScrollOffset = undefined;
+				this.followingLatest = index === this.transcript.length - 1;
+				return;
+			}
+			if ((direction < 0 && index <= 0) || (direction > 0 && index >= this.transcript.length - 1)) {
+				return;
+			}
+		}
+	}
+
+	private lastTurnIndex(): number | undefined {
+		for (let index = this.transcript.length - 1; index >= 0; index -= 1) {
+			if (this.transcript[index]?.kind === "user") {
+				return index;
+			}
+		}
+		return undefined;
+	}
+
+	private firstTurnIndex(): number | undefined {
+		for (let index = 0; index < this.transcript.length; index += 1) {
+			if (this.transcript[index]?.kind === "user") {
+				return index;
+			}
+		}
+		return undefined;
 	}
 
 	private scrollTranscript(delta: number): void {
@@ -905,14 +1070,12 @@ export class InteractiveTui {
 		} else {
 			this.transcriptScrollOffset = next;
 			this.followingLatest = false;
-			this.selectedToolCallId = undefined;
 		}
 	}
 
 	private scrollTranscriptToTop(): void {
 		this.transcriptScrollOffset = 0;
 		this.followingLatest = false;
-		this.selectedToolCallId = undefined;
 	}
 
 	private followTranscriptLatest(): void {
@@ -921,28 +1084,332 @@ export class InteractiveTui {
 		this.unseenEventCount = 0;
 	}
 
+	/**
+	 * Esc in the editor pane (Grok policy): never cancels a run, drops an open
+	 * selection, arms a double-press clear for a non-empty draft, or a rewind
+	 * (sessions picker) on an empty draft with prior turns.
+	 */
+	private handleEditorEscape(): void {
+		if (this.editor.selectionRange) {
+			this.editor.clearSelection();
+			this.disarmEsc();
+			this.repaint();
+			return;
+		}
+		if (this.streaming) {
+			this.disarmEsc();
+			this.transientHint = "ctrl+c interrupts the run";
+			this.repaint();
+			return;
+		}
+		if (this.editor.value.length > 0) {
+			if (this.escArm?.kind === "clear") {
+				this.disarmEsc();
+				this.stashDraft(true);
+				this.transientHint = "draft stashed · ctrl+s restores";
+			} else {
+				this.armEsc("clear");
+				this.transientHint = "esc again: clear draft";
+			}
+			this.repaint();
+			return;
+		}
+		if (this.transcript.some((entry) => entry.kind === "user")) {
+			if (this.escArm?.kind === "rewind") {
+				this.disarmEsc();
+				// Rewind surface: resolve the pending prompt with the sessions
+				// command, exactly as the palette fallback resolves /commands.
+				const resolve = this.promptResolve;
+				this.promptResolve = undefined;
+				if (resolve) {
+					resolve("/sessions");
+				} else {
+					this.pendingPrompts.push("/sessions");
+				}
+				this.repaint();
+				return;
+			}
+			this.armEsc("rewind");
+			this.transientHint = "esc again: sessions";
+			this.repaint();
+			return;
+		}
+		this.disarmEsc();
+		this.repaint();
+	}
+
+	private armEsc(kind: "clear" | "rewind"): void {
+		this.disarmEsc();
+		const timer = setTimeout(() => {
+			if (this.escArm?.timer !== timer) {
+				return;
+			}
+			this.escArm = undefined;
+			if (this.transientHint !== undefined) {
+				this.transientHint = undefined;
+				this.repaint();
+			}
+		}, ESC_DOUBLE_PRESS_MS);
+		timer.unref?.();
+		this.escArm = { kind, timer };
+	}
+
+	private disarmEsc(): void {
+		if (this.escArm) {
+			clearTimeout(this.escArm.timer);
+			this.escArm = undefined;
+		}
+	}
+
+	/** Ctrl+S: park the draft (stash) or restore the parked draft on an empty prompt. */
+	private toggleDraftStash(): void {
+		if (this.editor.value.length > 0) {
+			this.stashDraft(false);
+			this.transientHint = "draft stashed · ctrl+s restores";
+			return;
+		}
+		if (this.draftStash) {
+			this.editor.set(this.draftStash.text);
+			this.draftStash = undefined;
+			this.resetHistoryNavigation();
+		}
+	}
+
+	private stashDraft(discard: boolean): void {
+		const text = this.editor.value;
+		if (text.length === 0) {
+			return;
+		}
+		this.draftStash = { text, discard };
+		this.rememberPrompt(text);
+		this.editor.clear();
+		this.resetHistoryNavigation();
+		this.updateCompletion();
+	}
+
+	private resolveConfirm(choice: ConfirmChoice): void {
+		const confirm = this.confirm;
+		this.confirm = undefined;
+		confirm?.resolve(choice);
+		this.repaint();
+	}
+
+	private moveConfirmFocus(direction: -1 | 1): void {
+		const index = CONFIRM_ORDER.indexOf(this.confirmFocused);
+		const next = (index + direction + CONFIRM_ORDER.length) % CONFIRM_ORDER.length;
+		this.confirmFocused = CONFIRM_ORDER[next] ?? "once";
+	}
+
+	/** Wheel event → normalized scroll stream (Grok MouseScrollState). */
+	private handleWheel(key: { col?: number; row?: number; type: "wheelUp" | "wheelDown" }): void {
+		const direction: ScrollDirection = key.type === "wheelUp" ? "up" : "down";
+		let zone: "picker" | "inspector" | "transcript" = "transcript";
+		if (this.picker) {
+			zone = "picker";
+		} else if (key.col !== undefined && key.row !== undefined) {
+			const hit = this.lastHits.find(
+				(h) => h.row === key.row && key.col !== undefined && key.col >= h.col0 && key.col < h.col1,
+			);
+			if (hit?.target.kind === "inspectorBody" || hit?.target.kind === "inspectorTab") {
+				zone = "inspector";
+			}
+		}
+		this.scrollZone = zone;
+		const config = defaultScrollConfig(process.env, this.transcriptBodyHeight());
+		const update = this.scrollState.onScroll(direction, config);
+		if (update.lines !== 0) {
+			this.applyScrollLines(update.lines);
+		}
+		this.scheduleScrollTick(update.nextTickMs);
+		this.repaint();
+	}
+
+	private applyScrollLines(lines: number): void {
+		if (this.scrollZone === "picker" && this.picker) {
+			const last = Math.max(0, this.picker.matches.length - 1);
+			this.picker.index = Math.max(0, Math.min(last, this.picker.index + lines));
+			return;
+		}
+		if (this.scrollZone === "inspector" && this.activeInspector()) {
+			this.moveInspectorScroll(lines);
+			return;
+		}
+		this.scrollTranscript(lines);
+	}
+
+	/** Coalesced redraw cadence: the scroll stream flushes residual lines on a timer. */
+	private scheduleScrollTick(nextTickMs: number | undefined): void {
+		if (this.scrollTimer) {
+			clearTimeout(this.scrollTimer);
+			this.scrollTimer = undefined;
+		}
+		if (nextTickMs === undefined || this.closed) {
+			return;
+		}
+		this.scrollTimer = setTimeout(
+			() => {
+				this.scrollTimer = undefined;
+				const update = this.scrollState.onTick();
+				if (update.lines !== 0) {
+					this.applyScrollLines(update.lines);
+				}
+				this.scheduleScrollTick(update.nextTickMs);
+				this.repaint();
+			},
+			Math.max(1, nextTickMs),
+		);
+		this.scrollTimer.unref?.();
+	}
+
+	private transcriptBodyHeight(): number {
+		if (this.lastBodyHeight > 0) {
+			return this.lastBodyHeight;
+		}
+		return transcriptViewportFor(this.frameState(), this.columns(), this.rows()).bodyHeight;
+	}
+
+	/**
+	 * Click routing over the last frame's hit regions. A left-button release on
+	 * the press cell is a click; movement becomes a drag (reserved for text
+	 * selection — Shift-held clicks stay with the terminal's native select).
+	 */
+	private dispatchMouse(event: MouseEventInfo): void {
+		if (event.kind === "drag") {
+			return;
+		}
+		if (event.kind === "down") {
+			this.mouseDownCell = event.button === "left" ? { col: event.col, row: event.row } : undefined;
+			return;
+		}
+		const down = this.mouseDownCell;
+		this.mouseDownCell = undefined;
+		if (event.button !== "left" || !down || down.col !== event.col || down.row !== event.row) {
+			return;
+		}
+		const region = this.lastHits.find(
+			(hit) => event.row === hit.row && event.col >= hit.col0 && event.col < hit.col1,
+		);
+		if (!region) {
+			if (!this.picker && !this.confirm && event.row >= 2 && event.row < 2 + this.transcriptBodyHeight()) {
+				this.focus = "transcript";
+				this.repaint();
+			}
+			return;
+		}
+		const target = region.target;
+		if (this.picker) {
+			if (target.kind === "picker") {
+				this.picker.index = target.index;
+				this.finishPickerMatch();
+			}
+			return;
+		}
+		if (this.confirm) {
+			if (target.kind === "confirm") {
+				this.resolveConfirm(target.choice);
+			}
+			return;
+		}
+		switch (target.kind) {
+			case "editor": {
+				this.focus = "editor";
+				this.cancelCompletion();
+				const cellIndex = event.col - region.col0;
+				const charCol =
+					cellIndex >= target.cells.length
+						? target.charEnd
+						: (target.cells[Math.max(0, cellIndex)] ?? target.charEnd);
+				this.editor.setCursorFromDisplay(target.displayRow, charCol, event.shift);
+				this.updateCompletion();
+				break;
+			}
+			case "entry":
+				this.clickEntry(target.entryId);
+				break;
+			case "inspectorBody":
+				this.focus = "transcript";
+				this.pinTranscriptViewport();
+				this.selectedEntryId = target.entryId;
+				break;
+			case "inspectorTab": {
+				const entry = this.transcript.find((item) => item.id === target.entryId);
+				const toolCallId = entry?.tool?.toolCallId;
+				if (toolCallId !== undefined) {
+					this.focus = "transcript";
+					this.pinTranscriptViewport();
+					this.selectedEntryId = target.entryId;
+					this.expandedToolCallId = toolCallId;
+					this.inspectorView = target.view;
+					this.inspectorScrollOffset = 0;
+				}
+				break;
+			}
+			case "followLatest":
+				this.followTranscriptLatest();
+				break;
+		}
+		this.repaint();
+	}
+
+	/**
+	 * Freeze the transcript viewport at its current top row for a mouse
+	 * selection: the clicked row is already under the pointer, and pinning
+	 * keeps it there (a re-anchor or follow tail would slide other rows into
+	 * the cell). The "scrolled" affordance still offers End back to latest.
+	 */
+	private pinTranscriptViewport(): void {
+		if (this.transcriptScrollOffset !== undefined) {
+			return;
+		}
+		const { start, maxScroll } = transcriptViewportFor(this.frameState(), this.columns(), this.rows());
+		if (maxScroll <= 0) {
+			return;
+		}
+		this.transcriptScrollOffset = start;
+		this.followingLatest = false;
+	}
+
+	/** Click a transcript row: focus + select; a second click on a tool toggles its inspector. */
+	private clickEntry(entryId: string): void {
+		this.focus = "transcript";
+		this.cancelCompletion();
+		if (this.selectedEntryId === entryId) {
+			const entry = this.transcript.find((item) => item.id === entryId);
+			if (entry?.tool) {
+				this.toggleInspector();
+			}
+			return;
+		}
+		// The row is already under the pointer — keep the viewport put so a
+		// second click on the same cell still hits this entry.
+		this.pinTranscriptViewport();
+		this.selectedEntryId = entryId;
+	}
+
 	private scrollPage(): number {
 		const { bodyHeight } = transcriptViewportFor(this.frameState(), this.columns(), this.rows());
 		return Math.max(1, bodyHeight - 3);
 	}
 
 	private toggleInspector(): void {
-		if (this.selectedToolCallId === undefined) {
+		const toolCallId = this.transcript.find((entry) => entry.id === this.selectedEntryId)?.tool?.toolCallId;
+		if (toolCallId === undefined) {
 			return;
 		}
-		if (this.expandedToolCallId === this.selectedToolCallId) {
+		if (this.expandedToolCallId === toolCallId) {
 			this.expandedToolCallId = undefined;
 			this.inspectorScrollOffset = 0;
 			return;
 		}
-		this.expandedToolCallId = this.selectedToolCallId;
+		this.expandedToolCallId = toolCallId;
 		this.inspectorView = "summary";
 		this.inspectorScrollOffset = 0;
 	}
 
 	private moveInspectorView(direction: -1 | 1): void {
 		const inspector = this.activeInspector();
-		if (!inspector || inspector.tool.toolCallId !== this.selectedToolCallId) {
+		const selectedToolCallId = this.transcript.find((entry) => entry.id === this.selectedEntryId)?.tool?.toolCallId;
+		if (!inspector || inspector.tool.toolCallId !== selectedToolCallId) {
 			return;
 		}
 		const views = availableInspectorViews(inspector.tool, this.toolRenderer);
@@ -1070,6 +1537,8 @@ export class InteractiveTui {
 			return;
 		}
 		const frame = renderFrameEx(this.frameState(), this.columns(), this.rows());
+		this.lastHits = frame.hits;
+		this.lastBodyHeight = frame.bodyHeight;
 		this.screen.paint(frame.lines, frame.cursor);
 	}
 
@@ -1106,7 +1575,10 @@ export class InteractiveTui {
 						? "queue a message for the running agent…"
 						: "message — / for commands · ctrl+p palette"
 					: undefined,
+			editorSelection: this.editor.displaySelection(),
 			confirm: this.confirm?.request,
+			confirmFocused: this.confirm ? this.confirmFocused : undefined,
+			hint: this.transientHint,
 			picker: this.picker
 				? {
 						title: this.picker.title,
@@ -1119,7 +1591,7 @@ export class InteractiveTui {
 			completionRows: this.completionRows,
 			inspector: this.activeInspector(),
 			focus: this.focus,
-			selectedToolCallId: this.selectedToolCallId,
+			selectedEntryId: this.selectedEntryId,
 			followLatest: this.followingLatest,
 			unseenEventCount: this.unseenEventCount,
 			streaming: this.streaming,

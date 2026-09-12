@@ -108,6 +108,18 @@ editor. `/commands` still runs the picked command immediately. Optional
 `~/.pillow/keys.json` remaps actions (`palette`, `submit`, `newline`, …).
 `interrupt` cannot leave `ctrl+c`.
 
+Mouse and keyboard follow Grok-style interaction: the wheel/trackpad scrolls
+the transcript with cadence-normalized momentum, and `Z_AGENT_SCROLL_*` env
+vars tune it. Clicking a transcript entry selects it (a second click on a tool
+toggles its inspector, tabs switch views); clicking the prompt moves the
+cursor; clicking a picker row or confirm choice activates it. `PageUp`/
+`PageDown` scroll without leaving the prompt, typing while the transcript is
+focused forwards the keystroke into the editor, `Shift+←/→` jumps between
+turns, and `Ctrl+U`/`Ctrl+D` half-page scroll. `Shift`+arrows/`Home`/`End`
+selects draft text and typing replaces the selection. `Esc` drops a selection
+or, pressed twice, clears the draft into a stash (`Ctrl+S` restores it) — on
+an empty prompt, double-`Esc` opens the session browser.
+
 ## Extensions
 
 Trusted project or `--extension` modules may export `createExtension(api)` and

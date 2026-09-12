@@ -1,5 +1,5 @@
 import { DEFAULT_COMPLETION_ROWS } from "./completion.ts";
-import { type ConfirmRequest, formatConfirmPrompt } from "./confirm.ts";
+import { type ConfirmChoice, type ConfirmRequest, formatConfirmPrompt } from "./confirm.ts";
 import { renderMarkdown } from "./markdown.ts";
 import type {
 	TuiCompletionState,
@@ -29,6 +29,32 @@ export interface TuiScrollInfo {
 	bodyHeight: number;
 }
 
+/** What a mouse press on a screen region means. */
+export type TuiHitTarget =
+	| { kind: "entry"; entryId: string }
+	| { kind: "inspectorTab"; entryId: string; view: "summary" | "output" | "diff" }
+	| { kind: "inspectorBody"; entryId: string }
+	| { kind: "picker"; index: number }
+	| { kind: "confirm"; choice: ConfirmChoice }
+	| {
+			kind: "editor";
+			/** Display line index (pre-wrap) the clicked wrapped row belongs to. */
+			displayRow: number;
+			/** Char index just past this row's last content char; a click past the row lands here. */
+			charEnd: number;
+			/** Per-cell char offsets: cells[c - col0] = char index within the display line. */
+			cells: number[];
+	  }
+	| { kind: "followLatest" };
+
+/** A painted rectangle that answers a mouse press. Coordinates are 0-indexed, col1 exclusive. */
+export interface TuiHitRegion {
+	row: number;
+	col0: number;
+	col1: number;
+	target: TuiHitTarget;
+}
+
 export interface TuiFrameState {
 	status: string;
 	header?: TuiHeaderState;
@@ -36,15 +62,22 @@ export interface TuiFrameState {
 	editorLines: string[];
 	/** Cursor in display-line coordinates: row indexes editorLines, col counts characters. */
 	editorCursor?: { row: number; col: number };
+	/** Selected text as per-display-line char spans; painted inverse in the editor box. */
+	editorSelection?: Array<{ row: number; start: number; end: number }>;
 	/** Dim placeholder text for an empty editor. */
 	editorPlaceholder?: string;
 	confirm?: ConfirmRequest;
+	/** Which confirm choice is keyboard-focused (arrow/tab navigation before Enter). */
+	confirmFocused?: ConfirmChoice;
+	/** One-shot hint line override (e.g. "esc again: clear draft"). */
+	hint?: string;
 	picker?: TuiPickerState;
 	completion?: TuiCompletionState;
 	completionRows?: number;
 	inspector?: TuiInspectorState;
 	focus?: TuiFocus;
-	selectedToolCallId?: string;
+	/** Selected transcript entry (any kind; only tool entries expand inspectors). */
+	selectedEntryId?: string;
 	followLatest?: boolean;
 	unseenEventCount?: number;
 	/** First visible transcript row. Undefined = anchored to the latest content. */
@@ -71,6 +104,10 @@ export interface TuiFrame {
 	lines: string[];
 	/** Real terminal cursor cell (0-indexed); absent when the cursor should hide. */
 	cursor?: { row: number; col: number };
+	/** Clickable rectangles, refreshed every frame; empty when mouse is off. */
+	hits: TuiHitRegion[];
+	/** Transcript/picker body row count — the wheel-scroll viewport height. */
+	bodyHeight: number;
 }
 
 interface RenderClock {
@@ -178,15 +215,55 @@ export function renderFrameEx(state: TuiFrameState, width: number, height: numbe
 	const g = glyphsFor(state);
 	const header = renderHeader(state, safeWidth, paint, clock);
 	const divider = paint("dim", lineOf(g.rule, safeWidth));
+	const hits: TuiHitRegion[] = [];
 	let body: string[];
-	let footer: { lines: string[]; cursor?: { row: number; col: number } };
+	let footer: { lines: string[]; cursor?: { row: number; col: number }; hits: TuiHitRegion[] };
+	let bodyHeight = 0;
 	if (state.picker) {
 		footer = footerBlock(state, safeWidth, safeHeight, paint, undefined);
-		const bodyHeight = Math.max(0, safeHeight - 2 - footer.lines.length);
-		body = fitLines(pickerLines(state.picker, safeWidth, paint, g).slice(-bodyHeight), bodyHeight);
+		bodyHeight = Math.max(0, safeHeight - 2 - footer.lines.length);
+		const pickerBody = pickerLines(state.picker, safeWidth, paint, g);
+		const visible = pickerBody.slice(-bodyHeight);
+		body = fitLines(visible, bodyHeight);
+		const padding = bodyHeight - visible.length;
+		const dropped = pickerBody.length - visible.length;
+		for (let row = 0; row < visible.length; row += 1) {
+			const index = dropped + row - 2; // title + filter rows
+			if (index >= 0) {
+				hits.push({
+					row: 2 + padding + row,
+					col0: 0,
+					col1: safeWidth,
+					target: { kind: "picker", index },
+				});
+			}
+		}
 	} else {
 		const viewport = transcriptViewportFor(state, width, height);
 		body = viewport.lines;
+		bodyHeight = viewport.bodyHeight;
+		for (const [index, entryId] of viewport.entryIds.entries()) {
+			const row = 2 + index;
+			const tabSpans = viewport.tabs[index];
+			if (tabSpans) {
+				for (const span of tabSpans) {
+					hits.push({
+						row,
+						col0: span.col0,
+						col1: span.col1,
+						target: { kind: "inspectorTab", entryId: entryId ?? "", view: span.view },
+					});
+				}
+			}
+			if (entryId !== undefined) {
+				hits.push({
+					row,
+					col0: 0,
+					col1: safeWidth,
+					target: viewport.inspectorLines[index] ? { kind: "inspectorBody", entryId } : { kind: "entry", entryId },
+				});
+			}
+		}
 		const scroll: TuiScrollInfo = {
 			start: viewport.start,
 			maxScroll: viewport.maxScroll,
@@ -194,17 +271,27 @@ export function renderFrameEx(state: TuiFrameState, width: number, height: numbe
 		};
 		footer = footerBlock(state, safeWidth, safeHeight, paint, scroll);
 	}
+	const footerStart = 2 + body.length;
+	for (const hit of footer.hits) {
+		hits.push({ ...hit, row: hit.row + footerStart });
+	}
 	// Belt: no painted line may exceed the terminal width — overflow wraps and
 	// desynchronizes every absolute row write that follows.
 	const lines = [header, divider, ...body, ...footer.lines].map((line) => clipAnsi(line, safeWidth, g.ellipsis));
 	const cursor = footer.cursor
 		? { row: lines.length - footer.lines.length + footer.cursor.row, col: footer.cursor.col }
 		: undefined;
-	return { lines, cursor };
+	return { lines, cursor, hits, bodyHeight };
 }
 
 export interface TranscriptViewport {
 	lines: string[];
+	/** Entry id behind each visible line; undefined for blanks and status rows. */
+	entryIds: (string | undefined)[];
+	/** Clickable inspector tab spans per visible line. */
+	tabs: ({ col0: number; col1: number; view: "summary" | "output" | "diff" }[] | undefined)[];
+	/** True for lines inside the open inspector body (wheel scrolls it). */
+	inspectorLines: boolean[];
 	/** Largest valid scroll offset (0 when the transcript fits the viewport). */
 	maxScroll: number;
 	/** The offset actually applied for the current viewport. */
@@ -225,7 +312,15 @@ export function transcriptViewportFor(state: TuiFrameState, width: number, heigh
 	const rendered = transcriptLines(state, safeWidth, safeHeight, paint, clock);
 	const maxScroll = Math.max(0, rendered.lines.length - bodyHeight);
 	const viewport = pickViewport(rendered, bodyHeight, state.followLatest !== false, state.transcriptScrollOffset);
-	return { lines: viewport.lines, maxScroll, start: viewport.start, bodyHeight };
+	return {
+		lines: viewport.lines,
+		entryIds: viewport.entryIds,
+		tabs: viewport.tabs,
+		inspectorLines: viewport.inspectorLines,
+		maxScroll,
+		start: viewport.start,
+		bodyHeight,
+	};
 }
 
 function clockFor(state: TuiFrameState): RenderClock {
@@ -308,6 +403,8 @@ interface FooterBlock {
 	lines: string[];
 	/** Cursor position within `lines` (0-indexed cells). */
 	cursor?: { row: number; col: number };
+	/** Clickable regions, rows relative to the footer block start. */
+	hits: TuiHitRegion[];
 }
 
 function footerLength(
@@ -326,22 +423,49 @@ function footerBlock(
 	paint: (tone: Tone, text: string) => string,
 	scroll: TuiScrollInfo | undefined,
 ): FooterBlock {
-	if (state.picker) {
-		return { lines: [paint("muted", clip(pickerHint(width, glyphsFor(state)), width))] };
-	}
 	const g = glyphsFor(state);
+	const hits: TuiHitRegion[] = [];
+	if (state.picker) {
+		return { lines: [paint("muted", clip(pickerHint(width, g), width))], hits };
+	}
 	const lines: string[] = [];
 	if (state.confirm) {
-		lines.push(...confirmBlock(state.confirm, width, paint, g));
+		const block = confirmBlock(state.confirm, width, paint, g, state.confirmFocused);
+		for (const span of block.spans) {
+			hits.push({
+				row: span.row,
+				col0: span.col0,
+				col1: span.col1,
+				target: { kind: "confirm", choice: span.choice },
+			});
+		}
+		lines.push(...block.lines);
 	}
 	lines.push(...completionLines(state.completion, width, completionRowBudget(state, height, lines.length), paint));
 	const box = editorBox(state, width, height, paint);
 	const boxStart = lines.length;
+	const pipeW = cellWidth(g.pipe);
+	const markerW = cellWidth(g.prompt) + 1;
+	const contentCol = pipeW + 1 + markerW;
+	const contentWidth = Math.max(1, width - 2 * (pipeW + 1) - markerW);
+	for (const [index, rowMap] of box.hitRows.entries()) {
+		hits.push({
+			row: boxStart + 1 + index,
+			col0: contentCol,
+			col1: contentCol + contentWidth,
+			target: { kind: "editor", displayRow: rowMap.displayRow, charEnd: rowMap.charEnd, cells: rowMap.cells },
+		});
+	}
 	lines.push(...box.lines);
-	lines.push(paint("muted", clip(inputHint(width, state, scroll), width)));
+	const hint = inputHint(width, state, scroll);
+	lines.push(paint("muted", clip(hint.text, width)));
+	if (hint.followCells > 0) {
+		hits.push({ row: lines.length - 1, col0: 0, col1: hint.followCells, target: { kind: "followLatest" } });
+	}
 	return {
 		lines,
 		cursor: box.cursor === undefined ? undefined : { row: boxStart + box.cursor.row, col: box.cursor.col },
+		hits,
 	};
 }
 
@@ -363,14 +487,23 @@ function completionRowCount(value: number | undefined): number {
 	return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : DEFAULT_COMPLETION_ROWS;
 }
 
+export const CONFIRM_ORDER: readonly ConfirmChoice[] = ["once", "always", "deny"];
+
+const CONFIRM_LABELS: Record<ConfirmChoice, string> = {
+	once: "[y] once",
+	always: "[a] always",
+	deny: "[n] deny",
+};
+
 function confirmBlock(
 	request: ConfirmRequest,
 	width: number,
 	paint: (tone: Tone, text: string) => string,
 	g: TuiGlyphs,
-): string[] {
+	focused: ConfirmChoice | undefined,
+): { lines: string[]; spans: Array<{ choice: ConfirmChoice; col0: number; col1: number; row: number }> } {
 	if (width < 40) {
-		return [paint("warning", clip(` ${formatConfirmPrompt(request)}`, width))];
+		return { lines: [paint("warning", clip(` ${formatConfirmPrompt(request)}`, width))], spans: [] };
 	}
 	const summary = toolTargetSummary({
 		toolCallId: "",
@@ -379,11 +512,22 @@ function confirmBlock(
 		argsText: compactArgs(request.args, g.ellipsis),
 		state: "running",
 	});
-	return [
-		paint("warning", clip(` CONFIRM allow ${request.toolName}`, width)),
-		clip(`   ${summary}`, width),
-		paint("muted", clip("   [y] once  [a] always  [n] deny  (esc denies)", width)),
-	];
+	const spans: Array<{ choice: ConfirmChoice; col0: number; col1: number; row: number }> = [];
+	let column = 3;
+	const choices = CONFIRM_ORDER.map((choice, index) => {
+		const label = CONFIRM_LABELS[choice];
+		spans.push({ choice, col0: column, col1: column + label.length, row: 2 });
+		column += label.length + (index === CONFIRM_ORDER.length - 1 ? 0 : 2);
+		return choice === focused ? paint("accent", `\x1b[7m${label}\x1b[27m`) : paint("muted", label);
+	});
+	return {
+		lines: [
+			paint("warning", clip(` CONFIRM allow ${request.toolName}`, width)),
+			clip(`   ${summary}`, width),
+			`   ${choices.join("  ")}${paint("dim", "  (esc denies)")}`,
+		],
+		spans,
+	};
 }
 
 function completionLines(
@@ -415,6 +559,8 @@ function completionLines(
 interface EditorBox {
 	lines: string[];
 	cursor?: { row: number; col: number };
+	/** Click map for each visible content row (display line + cell→char table). */
+	hitRows: Array<{ displayRow: number; charEnd: number; cells: number[] }>;
 }
 
 function editorBox(
@@ -431,18 +577,29 @@ function editorBox(
 	const contentWidth = Math.max(1, width - 2 * (pipeW + 1) - markerW);
 	const display = state.editorLines.length > 0 ? state.editorLines.map((line) => clean(line)) : [""];
 	const wanted = state.editorCursor ?? { row: 0, col: 0 };
+	const selection = state.editorSelection ?? [];
 
 	const wrapped: string[] = [];
+	const rowMaps: Array<{ displayRow: number; charEnd: number; cells: number[] }> = [];
 	let cursorRow = 0;
 	let cursorCol = 0;
 	for (let row = 0; row < display.length; row += 1) {
 		const line = display[row] ?? "";
-		const part = wrapRowWithCursor(line, row === wanted.row ? wanted.col : -1, contentWidth);
+		const sel = selection.find((span) => span.row === row);
+		const part = wrapRowWithCursor(line, row === wanted.row ? wanted.col : -1, contentWidth, sel);
 		if (row === wanted.row) {
 			cursorRow = wrapped.length + part.row;
 			cursorCol = part.col;
 		}
-		wrapped.push(...part.rows);
+		for (const [index, text] of part.rows.entries()) {
+			const span = part.sel[index];
+			wrapped.push(span ? invertRange(text, span.start, span.end) : text);
+			rowMaps.push({
+				displayRow: row,
+				charEnd: part.charEnd[index] ?? 0,
+				cells: part.cells[index] ?? [],
+			});
+		}
 	}
 	if (wanted.row >= display.length) {
 		cursorRow = wrapped.length - 1;
@@ -450,12 +607,14 @@ function editorBox(
 	}
 	if (wrapped.length === 0) {
 		wrapped.push("");
+		rowMaps.push({ displayRow: 0, charEnd: 0, cells: [] });
 	}
 
 	const budget = Math.max(EDITOR_MIN_ROWS, Math.min(6, Math.floor(height / 4)));
 	const winRows = Math.min(budget, wrapped.length);
 	const start = Math.max(0, Math.min(cursorRow - winRows + 1, wrapped.length - winRows));
 	const visible = wrapped.slice(start, start + winRows);
+	const hitRows = rowMaps.slice(start, start + winRows);
 	while (visible.length < EDITOR_MIN_ROWS) {
 		visible.push("");
 	}
@@ -476,7 +635,16 @@ function editorBox(
 	return {
 		lines,
 		cursor: showCursor ? { row: 1 + (cursorRow - start), col: pipeW + 1 + markerW + cursorCol } : undefined,
+		hitRows,
 	};
+}
+
+/** Paint `text[start, end)` inverse-video (row strings are ANSI-free). */
+function invertRange(text: string, start: number, end: number): string {
+	if (end <= start) {
+		return text;
+	}
+	return `${text.slice(0, start)}\x1b[7m${text.slice(start, end)}\x1b[27m${text.slice(end)}`;
 }
 
 /** Wrap one display row by cell width while tracking a character-offset cursor. */
@@ -484,19 +652,51 @@ function wrapRowWithCursor(
 	line: string,
 	cursorChars: number,
 	width: number,
-): { rows: string[]; row: number; col: number } {
+	selection?: { start: number; end: number },
+): {
+	rows: string[];
+	row: number;
+	col: number;
+	/** Per output row: cell column → char index within the display line. */
+	cells: number[][];
+	/** Per output row: char index just past its last content char. */
+	charEnd: number[];
+	/** Per output row: selected char span (in row-local char indices), if any. */
+	sel: Array<{ start: number; end: number } | undefined>;
+} {
 	const safeWidth = Math.max(1, width);
 	const rows: string[] = [];
+	const cells: number[][] = [];
+	const charEnd: number[] = [];
+	const sel: Array<{ start: number; end: number } | undefined> = [];
 	let current = "";
+	let rowCells: number[] = [];
 	let used = 0;
+	// Offsets are UTF-16 indices throughout: the editor, displaySelection, and
+	// string slices all count code units, so astral chars stay consistent.
 	let index = 0;
 	let row = 0;
 	let col = 0;
+	const flush = (): void => {
+		rows.push(current);
+		cells.push(rowCells);
+		charEnd.push(index);
+		if (selection) {
+			const rowStart = rowCells[0] ?? index;
+			const rowEnd = index;
+			const start = Math.max(0, selection.start - rowStart);
+			const end = Math.min(rowEnd - rowStart, selection.end - rowStart);
+			sel.push(end > start ? { start, end } : undefined);
+		} else {
+			sel.push(undefined);
+		}
+	};
 	for (const char of Array.from(line)) {
 		const cw = cellWidth(char);
 		if (used > 0 && used + cw > safeWidth) {
-			rows.push(current);
+			flush();
 			current = "";
+			rowCells = [];
 			used = 0;
 		}
 		if (index === cursorChars) {
@@ -504,30 +704,40 @@ function wrapRowWithCursor(
 			col = used;
 		}
 		current += char;
+		for (let cell = 0; cell < cw; cell += 1) {
+			rowCells.push(index);
+		}
 		used += cw;
-		index += 1;
+		index += char.length;
 	}
 	if (cursorChars < 0 || cursorChars >= index) {
 		row = rows.length;
 		col = used;
 	}
-	rows.push(current);
+	flush();
 	if (col >= safeWidth) {
 		row += 1;
 		col = 0;
 	}
-	return { rows, row, col };
+	return { rows, row, col, cells, charEnd, sel };
 }
 
-function inputHint(width: number, state: TuiFrameState, scroll: TuiScrollInfo | undefined): string {
+function inputHint(
+	width: number,
+	state: TuiFrameState,
+	scroll: TuiScrollInfo | undefined,
+): { text: string; followCells: number } {
 	const g = glyphsFor(state);
+	if (state.hint !== undefined) {
+		return { text: state.hint, followCells: 0 };
+	}
 	const detached = scroll !== undefined && state.followLatest === false;
 	const unseen = detached && (state.unseenEventCount ?? 0) > 0 ? `${state.unseenEventCount} new events · ` : "";
 	const scrollTag = detached ? `↑ ${scroll.maxScroll > 0 ? "scrolled · " : ""}${unseen}End latest · ` : "";
 	let hint: string;
 	if (state.focus === "transcript") {
 		if (width >= 100) {
-			hint = `${scrollTag}up/down select · enter inspect · left/right views · pgup/pgdn scroll · g/G ends · esc editor`;
+			hint = `${scrollTag}up/down select · enter inspect · left/right views · pgup/pgdn scroll · home/end ends · esc editor`;
 		} else if (width >= 72) {
 			hint = `${scrollTag}up/down select · enter inspect · pgup/pgdn scroll · esc editor`;
 		} else if (width >= 54) {
@@ -559,7 +769,9 @@ function inputHint(width: number, state: TuiFrameState, scroll: TuiScrollInfo | 
 			hint = `${scrollTag}enter send`;
 		}
 	}
-	return hint.replaceAll("·", g.dot).replaceAll("↑", g.up);
+	const text = hint.replaceAll("·", g.dot).replaceAll("↑", g.up);
+	const tag = scrollTag.replaceAll("·", g.dot).replaceAll("↑", g.up);
+	return { text, followCells: tag.length === 0 ? 0 : visibleWidth(tag) };
 }
 
 function pickerHint(width: number, g: TuiGlyphs): string {
@@ -596,6 +808,19 @@ function pickerLines(
 interface TranscriptRender {
 	lines: string[];
 	selectedLine: number | undefined;
+	/** Entry id behind each line; undefined for blanks, status rows, and string entries. */
+	entryIds: (string | undefined)[];
+	/** Clickable inspector tab spans per line (inspector header rows only). */
+	tabs: (InspectorTabSpan[] | undefined)[];
+	/** Lines belonging to the open inspector body (wheel scroll target). */
+	inspectorLines: boolean[];
+}
+
+/** One clickable view name inside an inspector tab row. */
+interface InspectorTabSpan {
+	col0: number;
+	col1: number;
+	view: "summary" | "output" | "diff";
 }
 
 interface CachedEntry {
@@ -635,13 +860,15 @@ function transcriptLines(
 	clock: RenderClock,
 ): TranscriptRender {
 	const rendered: string[] = [];
+	const entryIds: (string | undefined)[] = [];
+	const tabs: (InspectorTabSpan[] | undefined)[] = [];
+	const inspectorLines: boolean[] = [];
 	let selectedLine: number | undefined;
 	const entries = state.transcript;
 	const lastEntry = entries.at(-1);
 	for (const [index, entry] of entries.entries()) {
-		const toolCallId = typeof entry === "string" ? undefined : entry.tool?.toolCallId;
-		const selected =
-			state.focus === "transcript" && toolCallId !== undefined && toolCallId === state.selectedToolCallId;
+		const entryId = typeof entry === "string" ? undefined : entry.id;
+		const selected = state.focus === "transcript" && entryId !== undefined && entryId === state.selectedEntryId;
 		if (selected) {
 			selectedLine = rendered.length;
 		}
@@ -649,7 +876,11 @@ function transcriptLines(
 		const blankBefore = typeof entry !== "string" && entry.kind === "user" && index > 0;
 		if (blankBefore) {
 			rendered.push("");
+			entryIds.push(undefined);
+			tabs.push(undefined);
+			inspectorLines.push(false);
 		}
+		const entryStart = rendered.length;
 		rendered.push(
 			...renderEntry(entry, {
 				state,
@@ -661,10 +892,27 @@ function transcriptLines(
 				tail,
 			}),
 		);
+		for (let line = entryStart; line < rendered.length; line += 1) {
+			entryIds.push(entryId);
+			tabs.push(undefined);
+			inspectorLines.push(false);
+		}
+		const toolCallId = typeof entry === "string" ? undefined : entry.tool?.toolCallId;
 		if (state.inspector !== undefined && toolCallId !== undefined && state.inspector.tool.toolCallId === toolCallId) {
-			rendered.push(
-				...inlineInspectorLines(state.inspector, width, height, paint, state.toolRenderer, glyphsFor(state)),
+			const block = inlineInspectorLines(
+				state.inspector,
+				width,
+				height,
+				paint,
+				state.toolRenderer,
+				glyphsFor(state),
 			);
+			for (const [lineIndex, line] of block.lines.entries()) {
+				rendered.push(line);
+				entryIds.push(entryId);
+				tabs.push(lineIndex === 0 ? block.tabSpans : undefined);
+				inspectorLines.push(true);
+			}
 		}
 	}
 	if (state.streaming) {
@@ -678,9 +926,12 @@ function transcriptLines(
 			const spin = spinner(clock);
 			const label = `${spin ? `${spin} ` : ""}waiting for model`;
 			rendered.push(paint("accent", `${" ".repeat(GUTTER)}${label}`));
+			entryIds.push(undefined);
+			tabs.push(undefined);
+			inspectorLines.push(false);
 		}
 	}
-	return { lines: rendered, selectedLine };
+	return { lines: rendered, selectedLine, entryIds, tabs, inspectorLines };
 }
 
 interface EntryContext {
@@ -879,24 +1130,48 @@ function pickViewport(
 	height: number,
 	followLatest: boolean,
 	scrollOffset: number | undefined,
-): { lines: string[]; start: number } {
+): Pick<TranscriptViewport, "lines" | "entryIds" | "tabs" | "inspectorLines" | "start"> {
 	const maxScroll = Math.max(0, rendered.lines.length - height);
+	const slice = (
+		start: number,
+		lines: string[],
+	): Pick<TranscriptViewport, "lines" | "entryIds" | "tabs" | "inspectorLines" | "start"> => ({
+		lines,
+		entryIds: rendered.entryIds.slice(start, start + lines.length),
+		tabs: rendered.tabs.slice(start, start + lines.length),
+		inspectorLines: rendered.inspectorLines.slice(start, start + lines.length),
+		start,
+	});
 	if (height <= 0) {
-		return { lines: [], start: maxScroll };
+		return { lines: [], entryIds: [], tabs: [], inspectorLines: [], start: maxScroll };
 	}
-	let start: number;
-	let lines: string[];
 	if (scrollOffset !== undefined) {
-		start = Math.min(scrollOffset, maxScroll);
-		lines = windowAt(rendered.lines, start, height);
-	} else if (followLatest || rendered.selectedLine === undefined) {
-		start = maxScroll;
-		lines = fitLines(rendered.lines.slice(-height), height);
-	} else {
-		start = Math.max(0, Math.min(maxScroll, rendered.selectedLine - Math.floor(height / 3)));
-		lines = windowAt(rendered.lines, start, height);
+		const start = Math.min(scrollOffset, maxScroll);
+		return slice(start, windowAt(rendered.lines, start, height));
 	}
-	return { lines, start };
+	if (followLatest || rendered.selectedLine === undefined) {
+		const start = maxScroll;
+		const lines = rendered.lines.slice(-height);
+		const startIndex = rendered.lines.length - lines.length;
+		return {
+			lines: fitLines(lines, height),
+			entryIds: padStart(rendered.entryIds.slice(startIndex), height),
+			tabs: padStart(rendered.tabs.slice(startIndex), height),
+			inspectorLines: padStart(rendered.inspectorLines.slice(startIndex), height),
+			start,
+		};
+	}
+	const start = Math.max(0, Math.min(maxScroll, rendered.selectedLine - Math.floor(height / 3)));
+	return slice(start, windowAt(rendered.lines, start, height));
+}
+
+/** Top-pad a parallel row array the way fitLines pads lines. */
+function padStart<T>(rows: T[], height: number): T[] {
+	const result = rows.slice(-height);
+	while (result.length < height) {
+		result.unshift(undefined as T);
+	}
+	return result;
 }
 
 function windowAt(lines: string[], start: number, height: number): string[] {
@@ -914,11 +1189,20 @@ function inlineInspectorLines(
 	paint: (tone: Tone, text: string) => string,
 	renderer: TuiToolRenderer | undefined,
 	g: TuiGlyphs,
-): string[] {
+): { lines: string[]; tabSpans: InspectorTabSpan[] } {
 	const view = inspector.view ?? "summary";
 	const views = availableInspectorViews(inspector.tool, renderer);
-	const tabs = views.map((item) => (item === view ? item.toUpperCase() : item)).join("  ");
 	const prefix = " ".repeat(GUTTER);
+	const tabSpans: InspectorTabSpan[] = [];
+	let column = GUTTER;
+	const tabs = views
+		.map((item) => {
+			const label = item === view ? item.toUpperCase() : item;
+			tabSpans.push({ col0: column, col1: column + label.length, view: item });
+			column += label.length + 2;
+			return label;
+		})
+		.join("  ");
 	const contentWidth = Math.max(1, width - visibleWidth(prefix));
 	const maxRows = detailRowLimit(width, height);
 	const detail = detailLines(inspector.tool, view, renderer)
@@ -927,11 +1211,14 @@ function inlineInspectorLines(
 	const statusTone: Tone =
 		inspector.tool.state === "running" ? "accent" : inspector.tool.state === "success" ? "success" : "error";
 	const marker = inspector.tool.state === "running" ? "RUNNING" : inspector.tool.state === "success" ? "DONE" : "FAIL";
-	return [
-		paint("accent", `${prefix}${tabs}`),
-		paint(statusTone, `${prefix}${marker} ${g.dot} ${inspector.tool.toolName}`),
-		...detail.map((line) => `${paint("muted", prefix)}${line}`),
-	];
+	return {
+		lines: [
+			paint("accent", `${prefix}${tabs}`),
+			paint(statusTone, `${prefix}${marker} ${g.dot} ${inspector.tool.toolName}`),
+			...detail.map((line) => `${paint("muted", prefix)}${line}`),
+		],
+		tabSpans,
+	};
 }
 
 function detailRowLimit(width: number, height: number): number {
