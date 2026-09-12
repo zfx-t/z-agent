@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted (amended by ADR-0030: content-derived op ids, real `settle` phase,
+resume policy, stream replay)
 
 ## Context
 

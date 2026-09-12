@@ -1,0 +1,40 @@
+# L5 resume acceptance — ADR-0030 (2026-09-12)
+
+Method: node --experimental-strip-types script against the real
+JsonlOpStore / SqliteOpStore / wrapTools / wrapStreamFn (no mocks; a scripted
+StreamFn stands in for the provider). A mid-execute crash is modelled by a
+pre-committed `effect`-phase op row, which is exactly what a kill -9 during
+tool.execute leaves behind.
+
+Observed output:
+
+=== backend: jsonl (/tmp/z-l5-ev-jsonl-Mm2Rvf) ===
+tool resume: threw OpInterruptedError | bash executions: 0 | phase=effect
+stream live: start->text_delta->done | stored phase=done attempt=1
+stream replay: start->done | inner calls=1
+equal-length distinct contexts: inner calls=2
+=== backend: sqlite (/tmp/z-l5-ev-sqlite-lmqS9u) ===
+tool resume: threw OpInterruptedError | bash executions: 0 | phase=effect
+stream live: start->text_delta->done | stored phase=done attempt=1
+stream replay: start->done | inner calls=1
+equal-length distinct contexts: inner calls=2
+columns: op_id,kind,phase,intent,result,updated_at,intent_hash,attempt,created_at
+
+Checks:
+1. Interrupted tool under default `fail` policy threw OpInterruptedError,
+   zero re-executions, op stays in `effect` phase (can never re-run).
+2. Live stream teed start->text_delta->done; settle+done committed before the
+   terminal event reached the consumer; replay emitted start->done with the
+   persisted message and zero additional provider calls.
+3. Two different equal-length contexts produced two distinct ops
+   (inner calls=2) — the old sessionId+messages.length collision is gone.
+4. SQLite op_state carries intent_hash/attempt/created_at; the pre-ADR-0030
+   6-column schema migrates in place (packages/harness/test/store-sqlite.test.ts
+   "migrates a pre-ADR-0030 database on open").
+
+Unit coverage: packages/harness/test/{op-id,harness,store-sqlite}.test.ts —
+46 tests, describe.each over both backends. Post-review hardening: the
+wrapStreamFn catch path no longer emits a second `start` when the sandwich
+fails after live events were teed (bare-ending inner stream or a failing
+settle/done commit) — it pushes only the terminal `error` event built from
+the last teed partial, so consumers see `start, …deltas…, error` once.

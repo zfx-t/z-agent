@@ -137,48 +137,48 @@ export interface CliArgs { /* … */ durableInterruptedTool: "fail" | "rerun"; }
 
 **Files:** Create `packages/harness/src/op-id.ts`, `packages/harness/test/op-id.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `canonicalJson({b:1,a:{d:2,c:3}}) === '{"a":{"c":3,"d":2},"b":1}'`; `undefined` fields dropped; arrays keep order; `streamOpId` differs for two contexts with equal message counts but different text; equal for the same context built with different key order; changes when `systemPrompt` changes; changes when a tool's schema changes; `toolOpId("call_1") === "tool:call_1"`; ids match `/^stream:[^:]+:[0-9a-f]{32}$/`.
-- [ ] **Step 2: Implement** with `node:crypto` `createHash("sha256")`.
-- [ ] **Step 3: Run** focused test, `npm run check`.
+- [x] **Step 1: Failing tests** — `canonicalJson({b:1,a:{d:2,c:3}}) === '{"a":{"c":3,"d":2},"b":1}'`; `undefined` fields dropped; arrays keep order; `streamOpId` differs for two contexts with equal message counts but different text; equal for the same context built with different key order; changes when `systemPrompt` changes; changes when a tool's schema changes; `toolOpId("call_1") === "tool:call_1"`; ids match `/^stream:[^:]+:[0-9a-f]{32}$/`.
+- [x] **Step 2: Implement** with `node:crypto` `createHash("sha256")`.
+- [x] **Step 3: Run** focused test, `npm run check`.
 
 ### Task 2: Store shape and SQLite migration
 
 **Files:** Modify `store.ts`, `store-sqlite.ts`; tests `store-sqlite.test.ts`, `harness.test.ts`.
 
-- [ ] **Step 1: Failing tests** — round-trip an `OpState` with `intentHash`, `attempt: 2`, `createdAt` through both stores; open a SQLite file created with the **old** 6-column DDL (test writes it directly with `node:sqlite`) then `load` an old row → `attempt === 1`, `intentHash === undefined`, and `commit` on it succeeds.
-- [ ] **Step 2: Implement** the column additions and the guarded migration; JSONL store needs only the type change (`attempt ?? 1` default on load).
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — round-trip an `OpState` with `intentHash`, `attempt: 2`, `createdAt` through both stores; open a SQLite file created with the **old** 6-column DDL (test writes it directly with `node:sqlite`) then `load` an old row → `attempt === 1`, `intentHash === undefined`, and `commit` on it succeeds.
+- [x] **Step 2: Implement** the column additions and the guarded migration; JSONL store needs only the type change (`attempt ?? 1` default on load).
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 3: Four-phase sandwich with mismatch and resume policy
 
 **Files:** Modify `sandwich.ts`; tests in `harness.test.ts` (parameterised `describe.each([["jsonl", …], ["sqlite", …]])`).
 
-- [ ] **Step 1: Failing tests** — phase progression observed through a recording store wrapper: `["intent","effect","settle","done"]`; `settle`-phase op with result replays without calling `effect`; `intent`-phase op re-runs with `attempt` 2; `effect`-phase op + policy `"fail"` calls `onInterrupted`, never `effect`, and ends `done`; `effect`-phase + `"rerun"` runs `effect` with `attempt` 2; `intentHash` mismatch throws `OpIntentMismatchError` before any commit; legacy row without `intentHash` is accepted.
-- [ ] **Step 2: Implement** — compute `hash = intentHash(intent)`; load; branch per phase; write `intent` (with `attempt`, `createdAt` preserved), `effect`, run, `settle { result }`, `done`.
-- [ ] **Step 3: Run** `npx vitest --run packages/harness/test/harness.test.ts`, then `npm run check`.
+- [x] **Step 1: Failing tests** — phase progression observed through a recording store wrapper: `["intent","effect","settle","done"]`; `settle`-phase op with result replays without calling `effect`; `intent`-phase op re-runs with `attempt` 2; `effect`-phase op + policy `"fail"` calls `onInterrupted`, never `effect`, and ends `done`; `effect`-phase + `"rerun"` runs `effect` with `attempt` 2; `intentHash` mismatch throws `OpIntentMismatchError` before any commit; legacy row without `intentHash` is accepted.
+- [x] **Step 2: Implement** — compute `hash = intentHash(intent)`; load; branch per phase; write `intent` (with `attempt`, `createdAt` preserved), `effect`, run, `settle { result }`, `done`.
+- [x] **Step 3: Run** `npx vitest --run packages/harness/test/harness.test.ts`, then `npm run check`.
 
 ### Task 4: Stream tee and replay
 
 **Files:** Create `replay.ts`; modify `wrap.ts`, `index.ts`; tests in `harness.test.ts`.
 
-- [ ] **Step 1: Failing tests** — with a scripted inner StreamFn that emits `start, text_delta×2, done, end`: the outer stream yields the identical event sequence; after it ends the store holds `settle`→`done` with `result.content` equal to the final message; calling the wrapped StreamFn again with the same context performs **zero** inner calls and yields `start, done, end` whose `message` deep-equals the stored one; an inner stream that ends `aborted` is persisted and replayed as `aborted`; two contexts of equal length map to two op rows; `interruptedStream: "fail"` on an `effect`-phase row yields an error-encoded message without an inner call; `wrapTools` with `"fail"` returns the interruption `AgentToolResult` (`isError: true`) and with `"rerun"` executes again.
-- [ ] **Step 2: Implement** — `wrapStreamFn`: build `{ opId, contextHash }`, call `withSandwich` whose `effect` returns a Promise that resolves with the **final AssistantMessage** after teeing (so the sandwich stores a message, not a stream), and return the outer stream synchronously. Concretely: create outer stream; kick off `withSandwich(...)` in a `void (async () => …)()`; on replay path, pipe `replayAssistantMessage(result)` into outer. Errors thrown by `withSandwich` (e.g. mismatch) become an error-encoded message on the outer stream, never a throw out of the StreamFn (StreamFn contract).
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — with a scripted inner StreamFn that emits `start, text_delta×2, done, end`: the outer stream yields the identical event sequence; after it ends the store holds `settle`→`done` with `result.content` equal to the final message; calling the wrapped StreamFn again with the same context performs **zero** inner calls and yields `start, done, end` whose `message` deep-equals the stored one; an inner stream that ends `aborted` is persisted and replayed as `aborted`; two contexts of equal length map to two op rows; `interruptedStream: "fail"` on an `effect`-phase row yields an error-encoded message without an inner call; `wrapTools` with `"fail"` returns the interruption `AgentToolResult` (`isError: true`) and with `"rerun"` executes again.
+- [x] **Step 2: Implement** — `wrapStreamFn`: build `{ opId, contextHash }`, call `withSandwich` whose `effect` returns a Promise that resolves with the **final AssistantMessage** after teeing (so the sandwich stores a message, not a stream), and return the outer stream synchronously. Concretely: create outer stream; kick off `withSandwich(...)` in a `void (async () => …)()`; on replay path, pipe `replayAssistantMessage(result)` into outer. Errors thrown by `withSandwich` (e.g. mismatch) become an error-encoded message on the outer stream, never a throw out of the StreamFn (StreamFn contract).
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 5: CLI wiring
 
 **Files:** Modify `packages/cli/src/args.ts`, `cli.ts`, `model-settings.ts`; tests `args.test.ts`, `model-settings.test.ts`.
 
-- [ ] **Step 1: Failing tests** — `--durable-interrupted-tool rerun` parses; invalid value errors; default `fail`; status line includes `durable: sqlite (interrupted tool: fail)` when durable.
-- [ ] **Step 2: Implement** — pass `{ resume: { interruptedTool: args.durableInterruptedTool } }` to both wrappers.
-- [ ] **Step 3: Run** focused tests, `npm run check`.
+- [x] **Step 1: Failing tests** — `--durable-interrupted-tool rerun` parses; invalid value errors; default `fail`; status line includes `durable: sqlite (interrupted tool: fail)` when durable.
+- [x] **Step 2: Implement** — pass `{ resume: { interruptedTool: args.durableInterruptedTool } }` to both wrappers.
+- [x] **Step 3: Run** focused tests, `npm run check`.
 
 ### Task 6: ADR, docs, evidence
 
-- [ ] `docs/adr/0030-l5-op-identity-settle.md` — Alternatives: keep length-based ids with session-scoped counters (rejected: collides after `/sessions` restore and compaction), always re-run interrupted tools (rejected: bash/write are not idempotent), store the whole event log for byte-exact replay (rejected: loop only needs the final message; events are derivable). Mark ADR-0021 "Amended by 0030".
-- [ ] Roadmap `Phase 3.3 — L5 op identity and settle`; glossary entries for the four phases, `intent hash`, `resume policy`.
-- [ ] `packages/harness/README.md` phase table and replay shape.
-- [ ] Evidence `docs/evidence/l5-resume-acceptance.txt`: (1) `--durable` run, `kill -9` during a bash `sleep 30`, `--resume` → interruption result, op row shows `attempt 1`, phase `done`; (2) kill after `settle` of a stream (inject a delay via a test extension or run with a stub server) → resume replays with no request in the stub log; (3) same steps with `--durable-backend sqlite`; (4) `sqlite3`-free proof: `node -e` script prints `PRAGMA table_info(op_state)` showing new columns on a pre-existing db.
+- [x] `docs/adr/0030-l5-op-identity-settle.md` — Alternatives: keep length-based ids with session-scoped counters (rejected: collides after `/sessions` restore and compaction), always re-run interrupted tools (rejected: bash/write are not idempotent), store the whole event log for byte-exact replay (rejected: loop only needs the final message; events are derivable). Mark ADR-0021 "Amended by 0030".
+- [x] Roadmap `Phase 3.3 — L5 op identity and settle`; glossary entries for the four phases, `intent hash`, `resume policy`.
+- [x] `packages/harness/README.md` phase table and replay shape.
+- [x] Evidence `docs/evidence/l5-resume-acceptance.txt`: (1) `--durable` run, `kill -9` during a bash `sleep 30`, `--resume` → interruption result, op row shows `attempt 1`, phase `done`; (2) kill after `settle` of a stream (inject a delay via a test extension or run with a stub server) → resume replays with no request in the stub log; (3) same steps with `--durable-backend sqlite`; (4) `sqlite3`-free proof: `node -e` script prints `PRAGMA table_info(op_state)` showing new columns on a pre-existing db.
 
 ## Execution Loop (per task)
 
